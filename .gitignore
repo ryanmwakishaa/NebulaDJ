@@ -1,0 +1,42 @@
+
+# Python virtual environments
+Backend/.venv/
+Backend/.venv312/
+.venv/
+venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Environment secrets
+.env
+.env.*
+
+# Build and cache files
+node_modules/
+dist/
+build/
+
+Backend/mix.mp3
+Backend/songs/
+# Large local audio files
+Backend/mix.mp3
+Backend/songs/
+
+# Python virtual environments
+Backend/.venv312/
+Backend/.venv/
+.venv/
+venv/
+
+# Dependencies and generated files
+node_modules/
+__pycache__/
+*.py[cod]
+dist/
+build/
+
+# Secrets
+.env
+.env.*

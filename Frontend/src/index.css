@@ -1,0 +1,159 @@
+@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #0a0b0e;
+  color: #e5e7eb;
+  font-family: 'Inter', system-ui, sans-serif;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---- Custom scrollbars ---- */
+.scroll-thin::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.scroll-thin::-webkit-scrollbar-track {
+  background: #14151a;
+}
+.scroll-thin::-webkit-scrollbar-thumb {
+  background: #2a2d38;
+  border-radius: 4px;
+}
+.scroll-thin::-webkit-scrollbar-thumb:hover {
+  background: #3a3d48;
+}
+
+/* ---- Range slider styling ---- */
+input[type='range'].dj-fader {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+input[type='range'].dj-fader::-webkit-slider-runnable-track {
+  height: 100%;
+  background: linear-gradient(to bottom, #0a0b0e, #1b1d24);
+  border-radius: 3px;
+  border: 1px solid #2a2d38;
+}
+input[type='range'].dj-fader::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 34px;
+  height: 18px;
+  border-radius: 3px;
+  background: linear-gradient(to bottom, #4b5563, #1f2937);
+  border: 1px solid #111827;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.7);
+  margin-left: -2px;
+}
+input[type='range'].dj-fader::-moz-range-track {
+  height: 100%;
+  background: linear-gradient(to bottom, #0a0b0e, #1b1d24);
+  border-radius: 3px;
+  border: 1px solid #2a2d38;
+}
+input[type='range'].dj-fader::-moz-range-thumb {
+  width: 34px;
+  height: 18px;
+  border-radius: 3px;
+  background: linear-gradient(to bottom, #4b5563, #1f2937);
+  border: 1px solid #111827;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.7);
+}
+
+/* horizontal crossfader */
+input[type='range'].dj-cross {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+input[type='range'].dj-cross::-webkit-slider-runnable-track {
+  height: 10px;
+  background: linear-gradient(to right, rgba(45,212,191,0.25), #14151a 50%, rgba(251,113,133,0.25));
+  border-radius: 5px;
+  border: 1px solid #2a2d38;
+}
+input[type='range'].dj-cross::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 22px;
+  height: 34px;
+  border-radius: 4px;
+  background: linear-gradient(to bottom, #6b7280, #1f2937);
+  border: 1px solid #111827;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.8);
+  margin-top: -13px;
+}
+input[type='range'].dj-cross::-moz-range-track {
+  height: 10px;
+  background: linear-gradient(to right, rgba(45,212,191,0.25), #14151a 50%, rgba(251,113,133,0.25));
+  border-radius: 5px;
+  border: 1px solid #2a2d38;
+}
+input[type='range'].dj-cross::-moz-range-thumb {
+  width: 22px;
+  height: 34px;
+  border-radius: 4px;
+  background: linear-gradient(to bottom, #6b7280, #1f2937);
+  border: 1px solid #111827;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.8);
+}
+
+/* knob */
+input[type='range'].dj-knob {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 60px;
+  height: 60px;
+  background: transparent;
+  cursor: grab;
+}
+input[type='range'].dj-knob:active {
+  cursor: grabbing;
+}
+
+/* spinning vinyl */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.spin-33 {
+  animation: spin 1.8s linear infinite;
+}
+.spin-paused {
+  animation-play-state: paused;
+}
+
+/* subtle pulsing glow for playing state */
+@keyframes pulse-glow {
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.pulse-glow {
+  animation: pulse-glow 1.6s ease-in-out infinite;
+}
+
+/* vu meter gradient */
+.vu-gradient {
+  background: linear-gradient(to top, #22c55e 0%, #22c55e 55%, #fbbf24 78%, #ef4444 100%);
+}
