@@ -14,6 +14,29 @@ function App() {
   const [backendOnline, setBackendOnline] = useState<boolean | null>(null);
   const [backendVersion, setBackendVersion] = useState<string>('');
 
+  // Track library can be collapsed; remember the choice between visits
+  const [libraryOpen, setLibraryOpen] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('nebuladj.libraryOpen') !== 'false';
+    } catch {
+      return true;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem('nebuladj.libraryOpen', String(libraryOpen));
+    } catch {
+      /* storage unavailable: ignore */
+    }
+  }, [libraryOpen]);
+
+  // Deck buttons ("Select a track", "Eject") ask for the library to open if it's hidden
+  useEffect(() => {
+    const open = () => setLibraryOpen(true);
+    window.addEventListener('nebula:open-library', open);
+    return () => window.removeEventListener('nebula:open-library', open);
+  }, []);
+
   // Check backend health on mount
   useEffect(() => {
     const checkHealth = async () => {
@@ -35,7 +58,8 @@ function App() {
   const anyPlaying = playingA || playingB;
 
   return (
-    <div className="h-screen flex flex-col bg-rbox-bg text-rbox-text overflow-hidden">
+    // The page scrolls normally now (no overflow-y-auto / overflow-hidden trap here).
+    <div className="min-h-screen flex flex-col bg-rbox-bg text-rbox-text">
       {/* ===== Top Bar ===== */}
       <header className="flex items-center justify-between px-4 py-2 bg-rbox-panel border-b border-rbox-line shrink-0">
         <div className="flex items-center gap-3">
@@ -97,30 +121,42 @@ function App() {
         </div>
       </header>
 
-      {/* ===== Main Workspace ===== */}
-      <main className="flex-1 flex gap-2 p-2 overflow-hidden min-h-0">
-        {/* Left: Decks + Mixer */}
+      {/* ===== Main Workspace =====
+          Wide screens (2xl and up): decks on the left, AI panel on the right.
+          Smaller screens: AI panel drops underneath so nothing gets squeezed. */}
+      <main className="flex-1 flex flex-col 2xl:flex-row gap-2 p-2 min-h-0">
+        {/* Left: Decks + Mixer + Library */}
         <div className="flex flex-col gap-2 min-w-0 flex-1">
-          {/* Decks + Mixer row */}
-          <div className="flex items-stretch gap-2 shrink-0">
-            <div className="flex-1 min-w-0">
+          {/* Decks + Mixer row. Scrolls sideways on narrow windows instead of
+              clipping the pitch / volume / level meters. */}
+          <div className="flex items-start gap-2 shrink-0 overflow-x-auto scroll-thin pb-1">
+            <div className="flex-1 min-w-[640px]">
               <DeckPanel deck="A" />
             </div>
-            <Mixer />
-            <div className="flex-1 min-w-0">
+            <div className="shrink-0">
+              <Mixer />
+            </div>
+            <div className="flex-1 min-w-[640px]">
               <DeckPanel deck="B" />
             </div>
           </div>
 
-          {/* Track browser */}
-          <div className="flex-1 min-h-0">
-            <TrackBrowser />
+          {/* Track library: click its header to collapse / expand. It stays mounted
+              when collapsed, so your search and filters are kept. */}
+          <div className={libraryOpen ? 'flex-1 min-h-[340px]' : 'shrink-0'}>
+            <TrackBrowser
+              collapsed={!libraryOpen}
+              onToggleCollapsed={() => setLibraryOpen((open) => !open)}
+            />
           </div>
         </div>
 
-        {/* Right: AI Panel */}
-        <div className="w-[360px] shrink-0 min-h-0">
-          <AIPanel />
+        {/* AI Panel: absolutely positioned inside its box on wide screens so its
+            content can never stretch the rest of the layout. */}
+        <div className="relative w-full 2xl:w-[360px] h-[560px] 2xl:h-auto 2xl:min-h-[560px] shrink-0">
+          <div className="h-full 2xl:absolute 2xl:inset-0">
+            <AIPanel />
+          </div>
         </div>
       </main>
 

@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { useAIStore } from '@/store/aiStore';
 import { useDJStore } from '@/store/djStore';
+import { AutoDJControls } from '@/components/AutoDJControls';
 import type { AIMode, AISetTrack, NextTrackRecommendation } from '@/types';
 import { formatDuration } from '@/lib/format';
 import { api } from '@/lib/api';
@@ -148,6 +149,10 @@ export function AIPanel() {
   const dj = useDJStore();
   const [activeTab, setActiveTab] = useState<'set' | 'recommendations' | 'mix'>('set');
 
+  // Set length: 0 means "as many tracks as this set type allows"
+  const [setLength, setSetLength] = useState<number>(0);
+  const maxTracks = (ai.currentSet as unknown as { max_tracks?: number } | null)?.max_tracks;
+
   const deckAtrack = dj.decks.A.track;
   const deckBtrack = dj.decks.B.track;
 
@@ -164,7 +169,7 @@ export function AIPanel() {
       seedTrackId: deckAtrack?.id,
       deckATrackId: deckAtrack?.id,
       deckBTrackId: deckBtrack?.id,
-      numTracks: 12,
+      numTracks: setLength,
     });
   };
 
@@ -215,6 +220,23 @@ export function AIPanel() {
             <div className="text-[10px] font-mono text-rbox-dim uppercase tracking-wider">
               AI Set Generation Modes
             </div>
+
+            {/* Set length */}
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-mono text-rbox-dim uppercase tracking-wider">Set length</span>
+              <select
+                value={setLength}
+                onChange={(e) => setSetLength(Number(e.target.value))}
+                disabled={ai.isGenerating}
+                className="text-[10px] font-mono bg-rbox-panel3 text-rbox-text border border-rbox-line rounded px-1 py-0.5 disabled:opacity-50"
+              >
+                <option value={0}>Max for mode</option>
+                {[8, 12, 20, 30, 50].map((n) => (
+                  <option key={n} value={n}>{n} tracks</option>
+                ))}
+              </select>
+            </div>
+
             <div className="grid grid-cols-1 gap-2">
               {AI_MODES.map((mode) => (
                 <button
@@ -225,7 +247,7 @@ export function AIPanel() {
                       seedTrackId: deckAtrack?.id,
                       deckATrackId: deckAtrack?.id,
                       deckBTrackId: deckBtrack?.id,
-                      numTracks: 12,
+                      numTracks: setLength,
                     });
                   }}
                   disabled={ai.isGenerating}
@@ -274,10 +296,16 @@ export function AIPanel() {
                   </div>
                 </div>
 
+                {maxTracks ? (
+                  <div className="text-[9px] font-mono text-rbox-dim">
+                    This mode can use up to {maxTracks} tracks from your library
+                  </div>
+                ) : null}
+
                 {/* Energy curve mini-chart */}
                 <div className="bg-rbox-panel2/60 rounded-lg border border-rbox-line/50 p-2">
                   <div className="text-[8px] font-mono text-rbox-dim mb-1">ENERGY CURVE</div>
-                  <div className="flex items-end gap-0.5 h-10">
+                  <div className="flex items-end gap-px h-10">
                     {ai.currentSet.energy_curve.map((e, i) => (
                       <div
                         key={i}
@@ -285,7 +313,6 @@ export function AIPanel() {
                         style={{
                           height: `${e * 100}%`,
                           background: e > 0.7 ? '#ef4444' : e > 0.4 ? '#fbbf24' : '#22c55e',
-                          minWidth: '4px',
                         }}
                       />
                     ))}
@@ -298,6 +325,9 @@ export function AIPanel() {
                     <SetTrackRow key={`${item.position}-${item.track.id}`} item={item} />
                   ))}
                 </div>
+
+                {/* Auto-DJ */}
+                <AutoDJControls />
 
                 {/* Generate Mix button */}
                 <button

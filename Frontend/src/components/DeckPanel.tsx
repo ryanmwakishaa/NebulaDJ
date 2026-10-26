@@ -1,5 +1,6 @@
 import { Play, Pause, Square, Music2, ArrowLeftRight, Disc3, Clock } from 'lucide-react';
 import { useDJStore } from '@/store/djStore';
+import { useAutoDJ } from '@/store/autoDJStore';
 import type { DeckId } from '@/types';
 import { Knob } from './Knob';
 import { VUMeter } from './VUMeter';
@@ -11,16 +12,24 @@ interface DeckPanelProps {
 
 export function DeckPanel({ deck }: DeckPanelProps) {
   const dj = useDJStore();
+  const auto = useAutoDJ();
   const state = dj.decks[deck];
   const accent = deck === 'A' ? '#2dd4bf' : '#fb7185';
-  const accentClass = deck === 'A' ? 'deck-a' : 'deck-b';
   const { track, isPlaying, isReady, volume, rate, positionSec, durationSec, eqHigh, eqMid, eqLow, filter, bpm } = state;
 
   const analyser = dj.getAnalyser(deck);
 
   const handleLoadClick = () => {
     dj.setPendingDeck(deck);
+    window.dispatchEvent(new Event('nebula:open-library')); // un-collapse the library if it's hidden
   };
+
+  // ---- Auto-DJ indicators ----
+  // A control gets an amber ring while the Auto-DJ is moving it.
+  const driven = (control: string) => auto.running && auto.driving.includes(`${deck}.${control}`);
+  const driveClass = (control: string) =>
+    driven(control) ? 'ring-1 ring-rbox-amber/80 shadow-[0_0_10px_rgba(251,191,36,0.35)]' : '';
+  const autoRole = auto.running ? (auto.liveDeck === deck ? 'AUTO · LIVE' : 'AUTO · NEXT') : null;
 
   return (
     <div className="flex flex-col bg-rbox-panel rounded-xl border border-rbox-line shadow-inset-deep overflow-hidden min-w-0">
@@ -40,6 +49,11 @@ export function DeckPanel({ deck }: DeckPanelProps) {
           >
             {isPlaying ? 'PLAYING' : isReady ? 'PAUSED' : track ? 'LOADING' : 'EMPTY'}
           </span>
+          {autoRole && (
+            <span className="px-1.5 py-0.5 text-[9px] font-mono rounded bg-rbox-amber/15 text-rbox-amber border border-rbox-amber/40">
+              {autoRole}
+            </span>
+          )}
         </div>
         {track && (
           <button
@@ -135,6 +149,30 @@ export function DeckPanel({ deck }: DeckPanelProps) {
             >
               <ArrowLeftRight size={14} />
             </button>
+            <button
+  onClick={() =>
+    dj.seek(
+      deck,
+      Math.max(0, positionSec - 10)
+    )
+  }
+>
+  -10s
+</button>
+
+<button
+  onClick={() =>
+    dj.seek(
+      deck,
+      Math.min(
+        durationSec,
+        positionSec + 10
+      )
+    )
+  }
+>
+  +10s
+</button>
           </div>
 
           {/* VU meter */}
@@ -186,6 +224,32 @@ export function DeckPanel({ deck }: DeckPanelProps) {
             )}
           </div>
 
+          {/* Progress Bar */}
+{track && (
+  <div className="px-1">
+    <input
+      type="range"
+      className="w-full"
+      min={0}
+      max={durationSec || track.duration_sec}
+      value={positionSec}
+      onChange={(e) =>
+        dj.seek(
+          deck,
+          Number(e.target.value)
+        )
+      }
+    />
+
+    <div className="flex justify-between text-[10px] text-rbox-dim font-mono mt-1">
+      <span>{formatTime(positionSec)}</span>
+      <span>
+        {formatTime(durationSec || track.duration_sec)}
+      </span>
+    </div>
+  </div>
+)}
+
           {/* BPM + Pitch + Vol + EQ */}
           <div className="flex items-stretch gap-2">
             {/* BPM display */}
@@ -206,7 +270,7 @@ export function DeckPanel({ deck }: DeckPanelProps) {
             </div>
 
             {/* Pitch fader */}
-            <div className="flex flex-col items-center bg-rbox-panel2 rounded-lg px-2 py-1 border border-rbox-line shrink-0">
+            <div className={`flex flex-col items-center bg-rbox-panel2 rounded-lg px-2 py-1 border border-rbox-line shrink-0 transition-shadow ${driveClass('rate')}`}>
               <span className="text-[8px] font-mono text-rbox-dim mb-1">PITCH</span>
               <div className="flex items-center gap-2 h-[64px]">
                 <div className="flex flex-col justify-between h-full text-[7px] font-mono text-rbox-dim">
@@ -245,28 +309,36 @@ export function DeckPanel({ deck }: DeckPanelProps) {
 
             {/* EQ + Filter knobs */}
             <div className="flex-1 grid grid-cols-4 gap-1 bg-rbox-panel2 rounded-lg px-2 py-1 border border-rbox-line items-center min-w-0">
-              <Knob
-                label="HI" value={eqHigh} min={0} max={2} defaultValue={1}
-                onChange={(v) => dj.setEQ(deck, 'high', v)} color={accent} size={44}
-                format={(v) => `${v > 1 ? '+' : ''}${((v - 1) * 12).toFixed(0)}dB`}
-              />
-              <Knob
-                label="MID" value={eqMid} min={0} max={2} defaultValue={1}
-                onChange={(v) => dj.setEQ(deck, 'mid', v)} color={accent} size={44}
-                format={(v) => `${v > 1 ? '+' : ''}${((v - 1) * 12).toFixed(0)}dB`}
-              />
-              <Knob
-                label="LOW" value={eqLow} min={0} max={2} defaultValue={1}
-                onChange={(v) => dj.setEQ(deck, 'low', v)} color={accent} size={44}
-                format={(v) => `${v > 1 ? '+' : ''}${((v - 1) * 12).toFixed(0)}dB`}
-              />
-              <Knob
-                label="FILTER" value={filter} min={-1} max={1} defaultValue={0}
-                onChange={(v) => dj.setFilter(deck, v)}
-                color={filter < 0 ? '#fbbf24' : filter > 0 ? '#22c55e' : '#6b7280'}
-                size={44}
-                format={(v) => (Math.abs(v) < 0.05 ? 'OFF' : v < 0 ? 'LP' : 'HP')}
-              />
+              <div className="flex items-center justify-center rounded-md">
+                <Knob
+                  label="HI" value={eqHigh} min={0} max={2} defaultValue={1}
+                  onChange={(v) => dj.setEQ(deck, 'high', v)} color={accent} size={44}
+                  format={(v) => `${v > 1 ? '+' : ''}${((v - 1) * 12).toFixed(0)}dB`}
+                />
+              </div>
+              <div className="flex items-center justify-center rounded-md">
+                <Knob
+                  label="MID" value={eqMid} min={0} max={2} defaultValue={1}
+                  onChange={(v) => dj.setEQ(deck, 'mid', v)} color={accent} size={44}
+                  format={(v) => `${v > 1 ? '+' : ''}${((v - 1) * 12).toFixed(0)}dB`}
+                />
+              </div>
+              <div className={`flex items-center justify-center rounded-md transition-shadow ${driveClass('low')}`}>
+                <Knob
+                  label="LOW" value={eqLow} min={0} max={2} defaultValue={1}
+                  onChange={(v) => dj.setEQ(deck, 'low', v)} color={accent} size={44}
+                  format={(v) => `${v > 1 ? '+' : ''}${((v - 1) * 12).toFixed(0)}dB`}
+                />
+              </div>
+              <div className={`flex items-center justify-center rounded-md transition-shadow ${driveClass('filter')}`}>
+                <Knob
+                  label="FILTER" value={filter} min={-1} max={1} defaultValue={0}
+                  onChange={(v) => dj.setFilter(deck, v)}
+                  color={filter < 0 ? '#fbbf24' : filter > 0 ? '#22c55e' : '#6b7280'}
+                  size={44}
+                  format={(v) => (Math.abs(v) < 0.05 ? 'OFF' : v < 0 ? 'LP' : 'HP')}
+                />
+              </div>
             </div>
           </div>
         </div>

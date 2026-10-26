@@ -1,15 +1,25 @@
 import { Volume2, Headphones, Crosshair } from 'lucide-react';
 import { useDJStore } from '@/store/djStore';
+import { useAutoDJ } from '@/store/autoDJStore';
 
 export function Mixer() {
   const dj = useDJStore();
+  const auto = useAutoDJ();
   const { crossfade, masterVolume } = dj;
+
+  // Amber ring + AUTO tag while the Auto-DJ is moving the crossfader
+  const xDriven = auto.running && auto.driving.includes('xfade');
 
   return (
     <div className="flex flex-col bg-rbox-panel rounded-xl border border-rbox-line shadow-inset-deep w-[170px] shrink-0">
       {/* Header */}
-      <div className="px-3 py-2 bg-rbox-panel2 border-b border-rbox-line rounded-t-xl">
+      <div className="px-3 py-2 bg-rbox-panel2 border-b border-rbox-line rounded-t-xl flex items-center justify-between">
         <span className="text-sm font-display tracking-wider text-rbox-dim">MIXER</span>
+        {auto.running && (
+          <span className="px-1.5 py-0.5 text-[8px] font-mono rounded bg-rbox-amber/15 text-rbox-amber border border-rbox-amber/40">
+            AUTO
+          </span>
+        )}
       </div>
 
       <div className="flex flex-col items-center gap-4 p-3 flex-1">
@@ -77,7 +87,11 @@ export function Mixer() {
             <span className="text-sm font-display text-deck-b">B</span>
           </div>
 
-          <div className="relative w-full px-2 py-4 bg-rbox-panel2 rounded-lg border border-rbox-line">
+          <div
+            className={`relative w-full px-2 py-4 bg-rbox-panel2 rounded-lg border border-rbox-line transition-shadow ${
+              xDriven ? 'ring-1 ring-rbox-amber/80 shadow-[0_0_10px_rgba(251,191,36,0.35)]' : ''
+            }`}
+          >
             <input
               type="range"
               className="dj-cross w-full"

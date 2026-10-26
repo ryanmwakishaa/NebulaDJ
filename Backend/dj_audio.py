@@ -9,6 +9,14 @@ Audio front-end for the virtual DJ.
            (bass-swap) crossfade, then the incoming track eases back to its
            own tempo.
 
+What the mixer does on top of that (v2):
+  * Structure-aware mix points: each track's intro / body / outro is found from
+    its per-bar energy, so a mix starts where the outgoing track's outro starts
+    and never runs longer than the incoming track's intro.
+  * Transition styles: long EQ blend when tempo + key fit, short "echo-out"
+    (bass cut, delay tail, hard drop-in on the phrase) when they don't.
+  * Gated loudness matching per track and a look-ahead limiter on the master.
+
 Examples
   python dj_audio.py analyze ./songs
   python dj_audio.py mix ./songs --tracks 8 --seed 7 --out mix.mp3
@@ -24,6 +32,7 @@ import csv
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -45,9 +54,14 @@ HOP = 512
 AUDIO_EXTS = {".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".aiff", ".aif", ".wma"}
 CACHE_NAME = ".dj_cache.json"
 CACHE_VERSION = 3
+STRUCT_CACHE_NAME = ".dj_structure.json"
+STRUCT_VERSION = 1
 XF_H = int(0.010 * SR)      # half-width of the splice crossfade between stretched chunks
 PAD = int(1.0 * SR)         # context fed to the phase vocoder around each chunk
 MIN_RATE, MAX_RATE = 0.85, 1.18
+TARGET_DB = -15.0           # per-track loudness target (gated RMS, dBFS)
+LIMIT_CEILING = 0.97        # master limiter ceiling (linear)
+ANALYSIS_SECONDS = 180      # how much of each track the beat/key analysis looks at
 
 
 # ==========================================================================
@@ -93,6 +107,18 @@ def read_tags(path: str) -> dict:
         return {k.lower(): str(v) for k, v in tags.items()}
     except Exception:
         return {}
+
+
+def _true_duration(path: str):
+    """Real length of the file in seconds, without decoding it fully when possible."""
+    try:
+        import librosa
+        try:
+            return float(librosa.get_duration(path=path))
+        except TypeError:                       # older librosa
+            return float(librosa.get_duration(filename=path))
+    except Exception:
+        return None
 
 
 # ==========================================================================
@@ -168,22 +194,23 @@ def analyze_file(path: str) -> dict:
     y = load_audio(path, ASR, mono=True)
 
     print("audio loaded")
-    # Analyze only first 180 seconds
-    max_seconds = 180
-    y = y[: int(ASR * max_seconds)]
+    # Remember the TRUE length: the beat/key analysis below only looks at the first
+    # ANALYSIS_SECONDS, but the library must store the real duration of the track.
+    full_duration = len(y) / ASR
+    y = y[: int(ASR * ANALYSIS_SECONDS)]
     if y.ndim > 1:
         y = y.mean(0)
-    duration = len(y) / ASR
+    duration = len(y) / ASR          # length of the analysis window
     if duration < 20:
         raise ValueError("track is shorter than 20 seconds")
-    
+
     print("running hpss")
     y_h, y_p = librosa.effects.hpss(y)
     print("hpss done")
 
     onset_p = librosa.onset.onset_strength(y=y_p, sr=ASR, hop_length=HOP)
     print("onset done")
-    onset_full = librosa.onset.onset_strength(y=y, sr=ASR, hop_length=HOP)  
+    onset_full = librosa.onset.onset_strength(y=y, sr=ASR, hop_length=HOP)
     print("starting beat tracking")
     tempo, beats = librosa.beat.beat_track(onset_envelope=onset_p, sr=ASR, hop_length=HOP,
                                            start_bpm=120.0, tightness=100)
@@ -260,7 +287,7 @@ def analyze_file(path: str) -> dict:
         "first_downbeat": round(f, 4),
         "key": key,
         "key_conf": round(conf, 3),
-        "duration": round(duration, 2),
+        "duration": round(full_duration, 2),
         "rms_db": rms_db,
         "centroid": float(cent.mean()),
         "onset": float(onset_full.mean()),
@@ -309,12 +336,19 @@ def analyze_folder(folder: str, workers: int | None = None, log=print) -> list[t
     for p in files:
         info = cache["items"].get(_cache_key(p))
         if info:
+            # Older analyses stored the length of the 180 s analysis window as the track's
+            # duration. Repair those cheaply (no re-analysis needed).
+            if info.get("duration", 0) <= ANALYSIS_SECONDS + 0.5:
+                real = _true_duration(p)
+                if real and real > info["duration"] + 1:
+                    info = {**info, "duration": round(real, 2)}
+                    cache["items"][_cache_key(p)] = info
             results[p] = info
         else:
             todo.append(p)
 
     if todo:
-         log(f"Analyzing {len(todo)} file(s) ({len(files) - len(todo)} cached)...")
+        log(f"Analyzing {len(todo)} file(s) ({len(files) - len(todo)} cached)...")
 
     for n, p in enumerate(todo, 1):
         print(f"Processing {p}")
@@ -374,6 +408,183 @@ def write_library_csv(tracks: list[Track], path: str):
         for t in tracks:
             w.writerow([t.title, t.artist, t.bpm, t.key, t.energy, t.genre, t.duration,
                         t.first_downbeat, t.path])
+
+
+# ==========================================================================
+# Track structure (intro / body / outro) from per-bar energy
+# ==========================================================================
+def structure_from_audio(y: np.ndarray, sr: int, bpm: float, first_downbeat: float,
+                         run: int = 4, level: float = 0.75):
+    """Find where a track 'kicks in' and where its outro starts, in bars from the first downbeat.
+
+    Per-bar energy = half full-band RMS, half bass RMS (both relative to the track's own
+    90th percentile). A bar is 'active' when it reaches `level` of the track's typical
+    body energy. The intro ends where `run` active bars in a row begin; the outro starts
+    after the last such run.
+
+    Returns dict(nb, intro_bars, outro_start, outro_bars, body) or None if the track has no
+    usable structure (too short, silent, or no steady body section).
+    """
+    from scipy.signal import butter, sosfiltfilt
+    if bpm <= 0 or len(y) < sr * 20:
+        return None
+    bar = 240.0 / bpm
+    nb_all = int((len(y) / sr - first_downbeat) // bar)
+    if nb_all < 16:
+        return None
+
+    edges = np.clip(((first_downbeat + np.arange(nb_all + 1) * bar) * sr).astype(int), 0, len(y))
+    low = sosfiltfilt(butter(4, 150, "low", fs=sr, output="sos"), y).astype(np.float32)
+
+    def per_bar(x):
+        return np.array([float(np.sqrt(np.mean(x[a:b] ** 2))) if b > a else 0.0
+                         for a, b in zip(edges[:-1], edges[1:])])
+
+    rms, lo = per_bar(y), per_bar(low)
+    p90r, p90l = np.percentile(rms, 90) + 1e-9, np.percentile(lo, 90) + 1e-9
+
+    loud = np.where(rms > 0.03 * p90r)[0]          # ignore trailing silence
+    if loud.size == 0:
+        return None
+    nb = int(loud[-1]) + 1
+    if nb < 16:
+        return None
+
+    e = 0.5 * rms / p90r + 0.5 * lo / p90l
+    body = float(np.median(e[nb // 4: (3 * nb) // 4]))
+    if body <= 0:
+        return None
+    active = e[:nb] >= level * body
+
+    intro = next((k for k in range(0, nb - run + 1) if active[k:k + run].all()), None)
+    last = next((k for k in range(nb - 1, run - 2, -1) if active[k - run + 1:k + 1].all()), None)
+    if intro is None or last is None or last < intro:
+        return None
+    return {"nb": nb, "intro_bars": int(intro), "outro_start": int(last) + 1,
+            "outro_bars": int(nb - last - 1), "body": round(body, 3)}
+
+
+def _struct_key(track: Track) -> str:
+    return f"{_cache_key(track.path)}|{round(track.bpm, 3)}|{round(track.first_downbeat, 4)}|v{STRUCT_VERSION}"
+
+
+def track_structure(track: Track, log=print):
+    """structure_from_audio() for a track, cached in a .dj_structure.json next to the songs."""
+    if not track.path or not os.path.exists(track.path):
+        return None
+    cache_path = Path(track.path).parent / STRUCT_CACHE_NAME
+    cache = {}
+    try:
+        cache = json.loads(cache_path.read_text())
+    except Exception:
+        pass
+    key = _struct_key(track)
+    if key in cache:
+        return cache[key]
+    try:
+        y = load_audio(track.path, ASR, mono=True)
+        st = structure_from_audio(y, ASR, track.bpm, track.first_downbeat)
+    except Exception as exc:
+        log(f"  (could not analyse structure of '{track.title}': {exc})")
+        st = None
+    cache[key] = st
+    try:
+        cache_path.write_text(json.dumps(cache))
+    except OSError:
+        pass
+    return st
+
+
+def _camelot_parts(key: str):
+    m = re.fullmatch(r"\s*(\d{1,2})\s*([ABab])\s*", key or "")
+    return (int(m.group(1)), m.group(2).upper()) if m else None
+
+
+def keys_compatible(a: str, b: str) -> bool:
+    """Same key, +/-1 on the Camelot wheel, or relative major/minor. Unknown keys count as fine."""
+    ca, cb = _camelot_parts(a), _camelot_parts(b)
+    if not ca or not cb:
+        return True
+    if ca[0] == cb[0]:
+        return True
+    if ca[1] == cb[1]:
+        diff = min((ca[0] - cb[0]) % 12, (cb[0] - ca[0]) % 12)
+        return diff <= 1
+    return False
+
+
+def refine_transitions(entries, overlap_bars: int, fx: bool = True, log=print):
+    """Turn the planner's rough mix points into structure-aware ones.
+
+    For every transition i -> i+1 this decides
+      * where the outgoing track starts to mix out (a phrase boundary at its outro start),
+      * how many bars the blend lasts (never longer than the outgoing outro or the
+        incoming intro), and
+      * the style: 'blend' (long EQ blend) or 'echo' (short echo-out + drop-in) when the
+        tempo/key don't fit well enough for a long blend.
+
+    Returns (mix_out, overlaps, styles): mix_out[i] is a time in track i (None for the last
+    track); overlaps[i] and styles[i] describe the transition from track i to i+1.
+    """
+    n = len(entries)
+    log("Analysing track structure (intro / outro)...")
+    structs = [track_structure(e.track, log) for e in entries]
+
+    mix_out: list = [None] * n
+    overlaps = [overlap_bars] * max(0, n - 1)
+    styles = ["blend"] * max(0, n - 1)
+    prev_nL = 0
+    for i in range(n - 1):
+        t, nx = entries[i].track, entries[i + 1].track
+        f, bar = t.first_downbeat, 240.0 / t.bpm
+        st, sn = structs[i], structs[i + 1]
+        k_plan = max(1, int(round((entries[i].mix_out_in_track - f) / bar)))
+        ratio = bpm_distance(t.bpm, nx.bpm)[1] or 1.0
+        nb = st["nb"] if st else None
+
+        # 1. Where to start mixing out: at a phrase (8-bar) boundary at the start of the outro.
+        if st and st["outro_bars"] >= 8:
+            o = st["outro_start"]
+            lo8 = (o // 8) * 8
+            k = lo8 if o - lo8 <= 2 else lo8 + 8
+            why = f"outro from bar {o}"
+        else:
+            k = int(round(k_plan / 8)) * 8
+            why = "no clear outro, snapped to a phrase"
+        k = max(8, k)
+        # The track must already have finished its own incoming overlap (+ a little groove).
+        while k < prev_nL + 4:
+            k += 8
+        if nb:
+            while k > nb - 4 and k > 8:
+                k -= 8
+
+        # 2. How long to blend: not past the outgoing outro, not into the incoming body.
+        cap_out = max(4, ((nb - k) // 4) * 4) if nb else overlap_bars
+        cap_in = max(4, int(sn["intro_bars"] * ratio) // 4 * 4) if sn else overlap_bars
+        ov = max(4, min(overlap_bars, cap_out, cap_in))
+
+        # 3. Style.
+        keys_ok = keys_compatible(t.key, nx.key)
+        r_need = t.bpm / (nx.bpm * ratio)
+        tempo_ok = MIN_RATE <= r_need <= MAX_RATE
+        style = "blend"
+        reasons = []
+        if fx and (ov < 8 or not keys_ok or not tempo_ok):
+            style = "echo"
+            ov = 4
+            if not keys_ok:
+                reasons.append("keys clash")
+            if not tempo_ok:
+                reasons.append("tempo gap")
+            if cap_out < 8 or cap_in < 8:
+                reasons.append("short intro/outro")
+        mix_out[i] = f + k * bar
+        overlaps[i], styles[i] = ov, style
+        prev_nL = max(1, int(round(ov / ratio)))
+        log(f"  {i + 1}->{i + 2}: mix out at bar {k} ({why}), {style} over {ov} bars"
+            + (f" [{', '.join(reasons)}]" if reasons else ""))
+    return mix_out, overlaps, styles
 
 
 # ==========================================================================
@@ -494,18 +705,103 @@ def eq_blend(seg: np.ndarray, direction: str, bar_samples: int) -> np.ndarray:
     return high * np.cos(x * np.pi / 2) + low * (1 - lo_in)
 
 
-def loudness_gain(y: np.ndarray, target_db: float = -17.0) -> float:
-    n = y.shape[1]
-    core = y[:, int(0.2 * n): int(0.8 * n)]
-    rms_db = 20 * math.log10(float(np.sqrt(np.mean(core ** 2))) + 1e-9)
-    return 10 ** (float(np.clip(target_db - rms_db, -10, 10)) / 20)
+def echo_transition(out_seg: np.ndarray, in_seg: np.ndarray, beat_samples: int,
+                    taps: int = 6, feedback: float = 0.55):
+    """Echo-out: the incoming track drops in clean on the phrase while the outgoing track
+    loses its bass at once, thins out, and trails off in beat-length echoes.
+
+    Returns (mixed, tail): `mixed` replaces the overlap region; `tail` (2, taps*beat) is
+    echo that rings on past the overlap and must be added to the audio that follows.
+    """
+    from scipy.signal import butter, sosfiltfilt
+    n = out_seg.shape[1]
+    d = max(1, int(beat_samples))
+    if n < 64:
+        return in_seg.copy(), np.zeros((2, d * taps), np.float32)
+    hp = sosfiltfilt(butter(4, 220, "high", fs=SR, output="sos"), out_seg, axis=1).astype(np.float32)
+    x = np.linspace(0, 1, n, dtype=np.float32)
+    dry_env = 1.0 - smoothstep((x - 0.05) / 0.35)                       # outgoing fades out fast
+    feed = hp * (smoothstep(x / 0.15) * (1.0 - smoothstep((x - 0.55) / 0.35)))  # what feeds the echo
+    wet = np.zeros((2, n + d * taps), np.float32)
+    for k in range(1, taps + 1):
+        wet[:, k * d: k * d + n] += (feedback ** k) * feed
+    mixed = in_seg + hp * dry_env + 0.9 * wet[:, :n]
+    return mixed.astype(np.float32), (0.9 * wet[:, n:]).astype(np.float32)
 
 
-def render_mix(entries, out_path: str, overlap_bars: int = 16, ramp_bars: int = 16, log=print) -> dict:
+def loudness_gain(y: np.ndarray, target_db: float = TARGET_DB) -> float:
+    """Gain that brings the track's *gated* RMS to target_db. Quiet intros/outros and
+    breakdowns are ignored, so a track with a long soft intro isn't turned up too far."""
+    mono = y.mean(axis=0) if y.ndim > 1 else y
+    w = int(0.4 * SR)
+    n = len(mono) // w
+    if n >= 4:
+        p = (mono[: n * w].reshape(n, w) ** 2).mean(axis=1)
+        sel = p[p > 0.1 * p.mean()]
+        power = float(sel.mean()) if sel.size else float(p.mean())
+    else:
+        power = float(np.mean(mono ** 2))
+    rms_db = 10 * math.log10(power + 1e-12)
+    return 10 ** (float(np.clip(target_db - rms_db, -12, 12)) / 20)
+
+
+def limit_file(src_wav: str, dst_wav: str, ceiling: float = LIMIT_CEILING, look_ms: float = 8.0):
+    """Look-ahead peak limiter, streamed in blocks. Gain only dips around the peaks that need it
+    (smooth ramps of `look_ms` either side), instead of turning the whole mix down for one peak.
+    Returns peak before limiting, the constant pre-gain applied, and the deepest reduction in dB."""
+    import soundfile as sf
+    from scipy.ndimage import minimum_filter1d, uniform_filter1d
+
+    look = max(1, int(look_ms / 1000 * SR))
+    size = 2 * look + 1
+    margin = 2 * look + 1
+    blk = SR * 10
+
+    # Pass 1: the overall peak, so one huge overlap spike can't force deep limiting
+    peak = 0.0
+    with sf.SoundFile(src_wav) as rd:
+        for block in rd.blocks(blocksize=blk, dtype="float32"):
+            peak = max(peak, float(np.abs(block).max()))
+    pre = min(1.0, 1.5 / peak) if peak > 0 else 1.0
+
+    deepest = 1.0
+    with sf.SoundFile(src_wav) as rd, sf.SoundFile(dst_wav, "w", samplerate=SR, channels=2,
+                                                   subtype="FLOAT") as wr:
+        total = len(rd)
+        pos = 0
+        while pos < total:
+            end = min(total, pos + blk)
+            lo, hi = max(0, pos - margin), min(total, end + margin)
+            rd.seek(lo)
+            x = rd.read(hi - lo, dtype="float32", always_2d=True) * pre
+            need = np.minimum(1.0, ceiling / (np.abs(x).max(axis=1) + 1e-9))
+            g = uniform_filter1d(minimum_filter1d(need, size=size, mode="nearest"), size=size, mode="nearest")
+            seg = slice(pos - lo, end - lo)
+            wr.write((x[seg] * g[seg, None]).astype(np.float32))
+            deepest = min(deepest, float(g[seg].min()))
+            pos = end
+    return {"peak": peak, "pre_gain": pre, "max_reduction_db": -20 * math.log10(max(deepest, 1e-6))}
+
+
+def plain_transitions(entries, overlap_bars):
+    n = len(entries)
+    return ([None if i == n - 1 else entries[i].mix_out_in_track for i in range(n)],
+            [overlap_bars] * max(0, n - 1), ["blend"] * max(0, n - 1))
+
+
+def render_mix(entries, out_path: str, overlap_bars: int = 16, ramp_bars: int = 16, log=print,
+               refine: bool = True, fx: bool = True, target_db: float = TARGET_DB) -> dict:
     import soundfile as sf
     n = len(entries)
+    if refine and n > 1:
+        mix_out, ovs, styles = refine_transitions(entries, overlap_bars, fx=fx, log=log)
+    else:
+        mix_out, ovs, styles = plain_transitions(entries, overlap_bars)
+
     tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
     tmp.close()
+    lim = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    lim.close()
     timeline = []
     warnings_out = []
     try:
@@ -520,21 +816,27 @@ def render_mix(entries, out_path: str, overlap_bars: int = 16, ramp_bars: int = 
                 if not t.path or not os.path.exists(t.path):
                     raise FileNotFoundError(f"audio file missing for '{t.title}': {t.path!r}")
                 y = to_stereo(load_audio(t.path, SR, mono=False))
-                y *= loudness_gain(y)
+                y *= loudness_gain(y, target_db)
                 f, bar = t.first_downbeat, 240.0 / t.bpm
                 is_first, is_last = i == 0, i == n - 1
-                kM = None if is_last else max(1, int(round((e.mix_out_in_track - f) / bar)))
+                kM = None if is_last else max(1, int(round((mix_out[i] - f) / bar)))
+                ov_out = None if is_last else ovs[i]          # blend length leaving this track
+                ov_in = None if is_first else ovs[i - 1]      # blend length entering this track
 
                 if is_first:
                     ratio, r0, nL, nR = 1.0, 1.0, 0, 0
                 else:
                     ratio = bpm_distance(p_out, t.bpm)[1]
                     r0 = p_out / (t.bpm * ratio)
-                    if not MIN_RATE <= r0 <= MAX_RATE:
+                    if not MIN_RATE <= r0 <= MAX_RATE and styles[i - 1] == "echo":
+                        # Tempo gap too big to match: echo the old track out and let the new
+                        # one drop in at its own tempo, like a DJ would. No stretching.
+                        r0 = 1.0
+                    elif not MIN_RATE <= r0 <= MAX_RATE:
                         warnings_out.append(f"'{t.title}': needs {100 * (r0 - 1):+.1f}% tempo change, "
                                             "clamped (transition will not be perfectly matched)")
                         r0 = float(np.clip(r0, MIN_RATE, MAX_RATE))
-                    nL = max(1, int(round(overlap_bars / ratio)))
+                    nL = max(1, int(round(ov_in / ratio)))
                     nR = int(round(ramp_bars / ratio))
                 nR_eff = nR if kM is None else max(0, min(nR, kM - nL))
                 n_steps = nR_eff // 2 if nR_eff >= 2 else 0
@@ -552,7 +854,7 @@ def render_mix(entries, out_path: str, overlap_bars: int = 16, ramp_bars: int = 
 
                 n_samp = y.shape[1]
                 k_start = -int(math.floor(f / bar + 1e-9)) if is_first else 0
-                k_end = (int(math.floor((n_samp / SR - f) / bar)) if is_last else kM + overlap_bars)
+                k_end = (int(math.floor((n_samp / SR - f) / bar)) if is_last else kM + ov_out)
                 cuts = {k_start, k_end}
                 if not is_first:
                     cuts |= {0, nL, *edges}
@@ -578,13 +880,21 @@ def render_mix(entries, out_path: str, overlap_bars: int = 16, ramp_bars: int = 
                     downbeat_at = bar_off[0]
                 else:
                     q = prev["bar_off"][prev["kM"]]
-                    prev_ovl = prev["bar_off"][prev["kM"] + overlap_bars] - q
+                    prev_ovl = prev["bar_off"][prev["kM"] + prev["ov"]] - q
                     in_ovl = bar_off[nL] - bar_off[0]
                     ovl = int(min(prev_ovl, in_ovl, cur.shape[1] - q, arr.shape[1]))
                     bar_s = int(round(240.0 / p_out * SR))
                     out.write(np.ascontiguousarray(cur[:, :q].T))
-                    mixed = eq_blend(cur[:, q: q + ovl], "out", bar_s) + eq_blend(arr[:, :ovl], "in", bar_s)
-                    arr[:, :ovl] = mixed
+                    if styles[i - 1] == "echo":
+                        beat_s = int(round(60.0 / p_out * SR))
+                        mixed, tail = echo_transition(cur[:, q: q + ovl], arr[:, :ovl], beat_s)
+                        arr[:, :ovl] = mixed
+                        m = min(tail.shape[1], arr.shape[1] - ovl)
+                        if m > 0:
+                            arr[:, ovl: ovl + m] += tail[:, :m]
+                    else:
+                        mixed = eq_blend(cur[:, q: q + ovl], "out", bar_s) + eq_blend(arr[:, :ovl], "in", bar_s)
+                        arr[:, :ovl] = mixed
                     base += q
                     cur = arr
                     downbeat_at = 0
@@ -594,8 +904,9 @@ def render_mix(entries, out_path: str, overlap_bars: int = 16, ramp_bars: int = 
                     "native_bpm": t.bpm,
                     "enter_bpm": None if is_first else round(t.bpm * ratio * r0, 2),
                     "start_s": (base + downbeat_at) / SR,
+                    "via": None if is_first else f"{styles[i - 1]} {ovs[i - 1]} bars",
                 })
-                prev = {"bar_off": bar_off, "kM": kM}
+                prev = {"bar_off": bar_off, "kM": kM, "ov": ov_out}
                 p_out = t.bpm * this_rate_at_M
 
             fo = min(int(3 * SR), cur.shape[1])
@@ -603,19 +914,16 @@ def render_mix(entries, out_path: str, overlap_bars: int = 16, ramp_bars: int = 
             out.write(np.ascontiguousarray(cur.T))
             total_s = (base + cur.shape[1]) / SR
 
-        peak = 0.0
-        with sf.SoundFile(tmp.name) as rd:
-            for block in rd.blocks(blocksize=SR * 10, dtype="float32"):
-                peak = max(peak, float(np.abs(block).max()))
-        gain = min(1.0, 0.95 / peak) if peak > 0 else 1.0
-        export_audio(tmp.name, out_path, gain, log)
+        stats = limit_file(tmp.name, lim.name)
+        export_audio(lim.name, out_path, 1.0, log)
     finally:
-        try:
-            os.unlink(tmp.name)
-        except OSError:
-            pass
-    return {"duration_s": total_s, "peak": peak, "gain": gain, "timeline": timeline,
-            "warnings": warnings_out}
+        for p in (tmp.name, lim.name):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+    return {"duration_s": total_s, "peak": stats["peak"], "gain": stats["pre_gain"],
+            "limiter_db": stats["max_reduction_db"], "timeline": timeline, "warnings": warnings_out}
 
 
 def export_audio(src_wav: str, out_path: str, gain: float, log=print):
@@ -692,17 +1000,19 @@ def cmd_mix(args):
         raise SystemExit("Audio files not found for: " + ", ".join(missing) +
                          "\n(The CSV needs a 'path' column pointing at each song.)")
     print("\nRendering...")
-    res = render_mix(entries, args.out, overlap_bars=args.overlap_bars, ramp_bars=args.ramp_bars)
-    print(f"\n{'#':>2}  {'starts':>6}  {'key':>3}  {'native':>7}  {'enters at':>9}  track")
+    res = render_mix(entries, args.out, overlap_bars=args.overlap_bars, ramp_bars=args.ramp_bars,
+                     refine=not args.no_structure, fx=not args.no_fx, target_db=args.target_db)
+    print(f"\n{'#':>2}  {'starts':>6}  {'key':>3}  {'native':>7}  {'enters at':>9}  {'transition':<14}  track")
     for r in res["timeline"]:
         m, s = divmod(int(r["start_s"]), 60)
         enter = f"{r['enter_bpm']:.1f}" if r["enter_bpm"] else "-"
         print(f"{r['index']:>2}  {m:02d}:{s:02d}  {r['key']:>3}  {r['native_bpm']:>7.1f}  {enter:>9}  "
-              f"{r['title']} - {r['artist']}")
+              f"{(r['via'] or '-'):<14}  {r['title']} - {r['artist']}")
     for w in res["warnings"]:
         print("WARNING:", w)
     m, s = divmod(int(res["duration_s"]), 60)
-    print(f"\nWrote {args.out}  ({m}:{s:02d}, peak {res['peak']:.2f}, gain x{res['gain']:.2f})")
+    print(f"\nWrote {args.out}  ({m}:{s:02d}, peak {res['peak']:.2f}, "
+          f"limiter max {res['limiter_db']:.1f} dB)")
 
 
 def main():
@@ -721,13 +1031,18 @@ def main():
     m.add_argument("--seed", type=int)
     m.add_argument("--out", default="mix.mp3")
     m.add_argument("--start", help="start with the first track whose title contains this text")
-    m.add_argument("--overlap-bars", type=int, default=16, help="length of each blend (default 16)")
+    m.add_argument("--overlap-bars", type=int, default=16, help="longest blend, in bars (default 16)")
     m.add_argument("--ramp-bars", type=int, default=16,
                    help="bars over which the new track eases back to its own tempo (default 16)")
     m.add_argument("--top-k", type=int, default=3)
     m.add_argument("--bpm-envelope", type=float, default=6.0)
     m.add_argument("--key-drop-prob", type=float, default=0.05)
     m.add_argument("--workers", type=int)
+    m.add_argument("--target-db", type=float, default=TARGET_DB,
+                   help=f"per-track loudness target in dBFS RMS (default {TARGET_DB})")
+    m.add_argument("--no-structure", action="store_true",
+                   help="use the planner's mix points as they are (skip intro/outro detection)")
+    m.add_argument("--no-fx", action="store_true", help="long EQ blends only (no echo-out transitions)")
     m.add_argument("--plan-only", action="store_true", help="print the set, don't render audio")
     m.add_argument("--quiet", action="store_true")
     m.set_defaults(fn=cmd_mix)

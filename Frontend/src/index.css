@@ -4,19 +4,24 @@
 @tailwind components;
 @tailwind utilities;
 
-html,
-body,
-#root {
+/* The page is allowed to grow taller than the window and scroll.
+   (Before: height: 100% + overflow: hidden clipped everything that didn't fit.) */
+html {
   height: 100%;
 }
 
 body {
   margin: 0;
+  min-height: 100%;
   background: #0a0b0e;
   color: #e5e7eb;
   font-family: 'Inter', system-ui, sans-serif;
-  overflow: hidden;
+  overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  min-height: 100vh;
 }
 
 /* ---- Custom scrollbars ---- */

@@ -66,14 +66,29 @@ export const useDJStore = create<DJStoreState>((set, get) => ({
   masterGain: null,
   pendingDeck: 'A',
 
-  initAudio: () => {
+ initAudio: () => {
     if (get().sharedCtx) return;
+
     const ctx = new AudioContext();
+
     const master = ctx.createGain();
     master.gain.value = get().masterVolume;
-    master.connect(ctx.destination);
-    set({ sharedCtx: ctx, masterGain: master });
-  },
+
+    const limiter = ctx.createDynamicsCompressor();
+    limiter.threshold.value = -3;
+    limiter.knee.value = 0;
+    limiter.ratio.value = 20;
+    limiter.attack.value = 0.003;
+    limiter.release.value = 0.15;
+
+    master.connect(limiter);
+    limiter.connect(ctx.destination);
+
+    set({
+        sharedCtx: ctx,
+        masterGain: master
+    });
+},
 
   loadTrack: async (deck, track) => {
     get().initAudio();
@@ -119,8 +134,14 @@ export const useDJStore = create<DJStoreState>((set, get) => ({
     audioEl.crossOrigin = 'anonymous';
     audioEl.src = audioUrl;
     audioEl.preload = 'auto';
+ 
+    const ctx = get().sharedCtx;
 
-    const ctx = get().sharedCtx!;
+    if (!ctx) {
+    throw new Error(
+        "AudioContext failed to initialize"
+    );
+   }
     const source = ctx.createMediaElementSource(audioEl);
     const eqLow = ctx.createBiquadFilter();
     eqLow.type = 'lowshelf';
