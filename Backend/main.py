@@ -274,6 +274,9 @@ def health() -> dict[str, str]:
 
 @app.get("/api/playlists")
 def get_playlists() -> list[dict[str, Any]]:
+    # Migrate legacy row-index IDs before returning playlist membership to the UI.
+    if LIBRARY_FILE.exists():
+        _read_library()
     with _playlist_db() as connection:
         rows = connection.execute(
             "SELECT id FROM playlists ORDER BY created_at DESC, id DESC"
