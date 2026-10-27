@@ -135,9 +135,12 @@ def _stable_track_id(row: dict[str, Any], index: int) -> str:
         normalized_path = os.path.normpath(raw_path).replace("\\", "/").casefold()
         identity = f"path:{normalized_path}"
     else:
-        title = (row.get("title") or f"Track {index + 1}").strip().casefold()
+        title = (row.get("title") or "untitled").strip().casefold()
         artist = (row.get("artist") or "Unknown artist").strip().casefold()
-        identity = f"metadata:{artist}|{title}"
+        album = (row.get("album") or "").strip().casefold()
+        bpm = (row.get("bpm") or "").strip()
+        key = (row.get("key") or "").strip().casefold()
+        identity = f"metadata:{artist}|{title}|{album}|{bpm}|{key}"
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
     return f"trk_{digest}"
 
