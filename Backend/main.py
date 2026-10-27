@@ -132,7 +132,7 @@ def _stable_track_id(row: dict[str, Any], index: int) -> str:
 
     raw_path = (row.get("path") or row.get("file_path") or "").strip()
     if raw_path:
-        normalized_path = os.path.normpath(raw_path).replace("\\\\", "/").casefold()
+        normalized_path = os.path.normpath(raw_path).replace("\\", "/").casefold()
         identity = f"path:{normalized_path}"
     else:
         title = (row.get("title") or f"Track {index + 1}").strip().casefold()
@@ -446,8 +446,7 @@ def get_tracks(
     return tracks[offset:offset + limit]
 
 
-# NOTE: /genres and /keys must stay above /{track_id}, or FastAPI will try to
-# parse "genres" as an integer ID.
+# NOTE: /genres and /keys must stay above /{track_id} so their static routes win.
 @app.get("/api/tracks/genres")
 def get_genres() -> list[str]:
     return sorted({track["genre"] for track in _read_library() if track["genre"]})
