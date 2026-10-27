@@ -10,3 +10,8 @@ pylibrb>=0.1      # Rubber Band time-stretch: keeps drums sharp when matching te
 # Also install ffmpeg (not a pip package) to read/write mp3 and m4a:
 #   macOS: brew install ffmpeg      Ubuntu: sudo apt install ffmpeg
 #   Windows: winget install Gyan.FFmpeg
+
+# API server dependencies
+fastapi>=0.110
+uvicorn[standard]>=0.27
+pydantic>=2.6
