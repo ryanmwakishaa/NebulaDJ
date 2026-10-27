@@ -27,6 +27,10 @@ interface AIState {
     deckATrackId?: string;
     deckBTrackId?: string;
     numTracks?: number;
+    playlistId?: string;
+    genre?: string;
+    durationMinutes?: number;
+    mode?: AIMode;
   }) => Promise<void>;
   fetchRecommendations: (deckATrackId?: string, deckBTrackId?: string) => Promise<void>;
   renderMix: (setId: string) => Promise<void>;
@@ -61,6 +65,9 @@ export const useAIStore = create<AIState>((set, get) => ({
         deck_a_track_id: params.deckATrackId,
         deck_b_track_id: params.deckBTrackId,
         num_tracks: params.numTracks,
+        playlist_id: params.playlistId || undefined,
+        genre: params.genre || undefined,
+        duration_minutes: params.durationMinutes || undefined,
       });
       set((s) => ({
         isGenerating: false,

@@ -24,7 +24,7 @@ import { useDJStore } from '@/store/djStore';
 import { AutoDJControls } from '@/components/AutoDJControls';
 import type { AIMode, AISetTrack, NextTrackRecommendation } from '@/types';
 import { formatDuration } from '@/lib/format';
-import { api } from '@/lib/api';
+import { api, type Playlist } from '@/lib/api';
 
 const AI_MODES: { mode: AIMode; label: string; icon: React.ReactNode; desc: string; color: string }[] = [
   { mode: 'auto', label: 'Generate AI Set', icon: <Sparkles size={15} />, desc: 'Auto-select tracks for a seamless mix', color: '#2dd4bf' },
@@ -151,6 +151,14 @@ export function AIPanel() {
 
   // Set length: 0 means "as many tracks as this set type allows"
   const [setLength, setSetLength] = useState<number>(0);
+  const [targetDuration, setTargetDuration] = useState<number>(30);
+  const [selectedPlaylistId, setSelectedPlaylistId] = useState<string>('');
+  const [playlists, setPlaylists] = useState<Playlist[]>([]);
+  const [selectedGenre, setSelectedGenre] = useState<string>('Afro House');
+
+  useEffect(() => {
+    api.getPlaylists().then(setPlaylists).catch(() => setPlaylists([]));
+  }, []);
   const maxTracks = (ai.currentSet as unknown as { max_tracks?: number } | null)?.max_tracks;
 
   const deckAtrack = dj.decks.A.track;
@@ -170,6 +178,9 @@ export function AIPanel() {
       deckATrackId: deckAtrack?.id,
       deckBTrackId: deckBtrack?.id,
       numTracks: setLength,
+      playlistId: selectedPlaylistId || undefined,
+      genre: selectedGenre || undefined,
+      durationMinutes: setLength ? undefined : targetDuration || undefined,
     });
   };
 
@@ -221,20 +232,68 @@ export function AIPanel() {
               AI Set Generation Modes
             </div>
 
-            {/* Set length */}
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] font-mono text-rbox-dim uppercase tracking-wider">Set length</span>
-              <select
-                value={setLength}
-                onChange={(e) => setSetLength(Number(e.target.value))}
-                disabled={ai.isGenerating}
-                className="text-[10px] font-mono bg-rbox-panel3 text-rbox-text border border-rbox-line rounded px-1 py-0.5 disabled:opacity-50"
-              >
-                <option value={0}>Max for mode</option>
-                {[8, 12, 20, 30, 50].map((n) => (
-                  <option key={n} value={n}>{n} tracks</option>
-                ))}
-              </select>
+            {/* Mix source and constraints */}
+            <div className="space-y-2 rounded-lg border border-rbox-line bg-rbox-panel2/50 p-3">
+              <label className="block text-[10px] font-mono text-rbox-dim uppercase tracking-wider">
+                Source playlist
+                <select
+                  value={selectedPlaylistId}
+                  onChange={(e) => setSelectedPlaylistId(e.target.value)}
+                  disabled={ai.isGenerating}
+                  className="mt-1 block w-full text-xs normal-case bg-rbox-panel3 text-rbox-text border border-rbox-line rounded px-2 py-1.5 disabled:opacity-50"
+                >
+                  <option value="">Entire library</option>
+                  {playlists.map((playlist) => (
+                    <option key={playlist.id} value={playlist.id}>
+                      {playlist.name} ({playlist.track_ids.length} tracks)
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block text-[10px] font-mono text-rbox-dim uppercase tracking-wider">
+                Genre filter
+                <select
+                  value={selectedGenre}
+                  onChange={(e) => setSelectedGenre(e.target.value)}
+                  disabled={ai.isGenerating}
+                  className="mt-1 block w-full text-xs normal-case bg-rbox-panel3 text-rbox-text border border-rbox-line rounded px-2 py-1.5 disabled:opacity-50"
+                >
+                  <option value="Afro House">Afro House only</option>
+                  <option value="">Any genre</option>
+                </select>
+              </label>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[10px] font-mono text-rbox-dim uppercase tracking-wider">Target duration</span>
+                <select
+                  value={targetDuration}
+                  onChange={(e) => { setTargetDuration(Number(e.target.value)); setSetLength(0); }}
+                  disabled={ai.isGenerating}
+                  className="text-[10px] font-mono bg-rbox-panel3 text-rbox-text border border-rbox-line rounded px-2 py-1 disabled:opacity-50"
+                >
+                  <option value={0}>Max for mode</option>
+                  <option value={15}>15 minutes</option>
+                  <option value={30}>30 minutes</option>
+                  <option value={45}>45 minutes</option>
+                  <option value={60}>60 minutes</option>
+                </select>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[10px] font-mono text-rbox-dim uppercase tracking-wider">Exact track count (optional)</span>
+                <select
+                  value={setLength}
+                  onChange={(e) => setSetLength(Number(e.target.value))}
+                  disabled={ai.isGenerating}
+                  className="text-[10px] font-mono bg-rbox-panel3 text-rbox-text border border-rbox-line rounded px-2 py-1 disabled:opacity-50"
+                >
+                  <option value={0}>Use target duration</option>
+                  {[8, 12, 20, 30, 50].map((n) => (
+                    <option key={n} value={n}>{n} tracks</option>
+                  ))}
+                </select>
+              </div>
+              <p className="text-[9px] text-rbox-dim">
+                A selected playlist is a strict boundary. If it doesn't contain enough matching tracks, generation fails instead of pulling from the full library.
+              </p>
             </div>
 
             <div className="grid grid-cols-1 gap-2">
@@ -244,10 +303,14 @@ export function AIPanel() {
                   onClick={() => {
                     ai.setMode(mode.mode);
                     ai.generateSet({
+                      mode: mode.mode,
                       seedTrackId: deckAtrack?.id,
                       deckATrackId: deckAtrack?.id,
                       deckBTrackId: deckBtrack?.id,
                       numTracks: setLength,
+                      playlistId: selectedPlaylistId || undefined,
+                      genre: selectedGenre || undefined,
+                      durationMinutes: setLength ? undefined : targetDuration || undefined,
                     });
                   }}
                   disabled={ai.isGenerating}
