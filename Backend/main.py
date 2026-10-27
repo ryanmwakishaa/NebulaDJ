@@ -4,6 +4,7 @@ import math
 import os
 import random
 import re
+import shutil
 import sqlite3
 import threading
 import uuid
@@ -150,6 +151,17 @@ def _migrate_legacy_playlist_track_ids(tracks: list[dict[str, Any]]) -> None:
     if not PLAYLISTS_DB.exists():
         return
     index_to_id = {str(index): track["id"] for index, track in enumerate(tracks)}
+
+    # Take a one-time backup before touching legacy playlist membership.
+    with sqlite3.connect(PLAYLISTS_DB, timeout=10) as check_connection:
+        has_legacy_ids = any(
+            str(row[0]).isdigit()
+            for row in check_connection.execute("SELECT track_id FROM playlist_tracks")
+        )
+    backup_path = PLAYLISTS_DB.with_name(PLAYLISTS_DB.name + ".pre-stable-ids.bak")
+    if has_legacy_ids and not backup_path.exists():
+        shutil.copy2(PLAYLISTS_DB, backup_path)
+
     with _playlist_db() as connection:
         rows = connection.execute(
             "SELECT playlist_id, track_id, position FROM playlist_tracks"
