@@ -806,6 +806,28 @@ def _build_set(req: AISetRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=f"No tracks in the selected source are eligible for mode '{mode}'")
     max_tracks = min(len(eligible), HARD_CAP)
     requested = _requested_length(req, eligible)
+
+    # A mix needs at least two distinct tracks. Keep playlist/genre filtering strict:
+    # never silently widen the source or shorten a requested duration to hide a shortage.
+    if max_tracks < 2:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Only {max_tracks} track(s) match the selected playlist and filters. "
+                "At least 2 matching tracks are required to generate a mix."
+            ),
+        )
+    if req.duration_minutes and requested and requested > max_tracks:
+        source_name = "selected playlist" if req.playlist_id else "library"
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"A {req.duration_minutes:g}-minute mix needs approximately {requested} "
+                f"matching tracks, but only {max_tracks} are available in the {source_name} "
+                "after genre and mode filters. Add matching tracks or choose a shorter duration."
+            ),
+        )
+
     length = max(1, min(requested if requested else max_tracks, max_tracks))
 
     remaining = list(eligible)
