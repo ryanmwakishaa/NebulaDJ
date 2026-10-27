@@ -780,17 +780,8 @@ def _build_set(req: AISetRequest) -> dict[str, Any]:
     library = _read_library()
     pool = library
 
-    # If a playlist is selected, it is the hard source boundary. Never silently
-    # pull tracks from the full library to fill gaps in a curated playlist.
-    if req.playlist_id:
-        with _playlist_db() as connection:
-            playlist = _playlist_to_dict(connection, req.playlist_id)
-        if playlist is None:
-            raise HTTPException(status_code=404, detail="Playlist not found")
-        playlist_ids = set(playlist["track_ids"])
-        pool = [t for t in library if t["id"] in playlist_ids]
-        if not pool:
-            raise HTTPException(status_code=400, detail="This playlist has no tracks in the current library")
+    # AI set generation always uses the full analyzed library.
+    # Playlists remain available for organizing tracks, but do not constrain AI mixes.
 
     if req.genre:
         pool = [t for t in pool if t["genre"].casefold() == req.genre.casefold()]
@@ -813,12 +804,12 @@ def _build_set(req: AISetRequest) -> dict[str, Any]:
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Only {max_tracks} track(s) match the selected playlist and filters. "
+                f"Only {max_tracks} track(s) match the active filters. "
                 "At least 2 matching tracks are required to generate a mix."
             ),
         )
     if req.duration_minutes and requested and requested > max_tracks:
-        source_name = "selected playlist" if req.playlist_id else "library"
+        source_name = "library"
         raise HTTPException(
             status_code=400,
             detail=(
