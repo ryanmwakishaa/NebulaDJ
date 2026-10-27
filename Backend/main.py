@@ -25,12 +25,21 @@ PLAYLISTS_DB = BASE_DIR / "nebula_playlists.db"
 
 app = FastAPI(title="NebulaDJ API", version="2.0.0")
 
+# Local development is allowed by default. Add the deployed frontend origin with
+# NEBULADJ_ALLOWED_ORIGINS, as a comma-separated list, when using a public frontend.
+_allowed_origins = [
+    origin.strip().rstrip("/")
+    for origin in os.getenv("NEBULADJ_ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+]
+_allowed_origins.extend([
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+])
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
+    allow_origins=list(dict.fromkeys(_allowed_origins)),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
