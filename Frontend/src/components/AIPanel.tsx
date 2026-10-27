@@ -152,13 +152,7 @@ export function AIPanel() {
   // Set length: 0 means "as many tracks as this set type allows"
   const [setLength, setSetLength] = useState<number>(0);
   const [targetDuration, setTargetDuration] = useState<number>(30);
-  const [selectedPlaylistId, setSelectedPlaylistId] = useState<string>('');
-  const [playlists, setPlaylists] = useState<Playlist[]>([]);
-  const [selectedGenre, setSelectedGenre] = useState<string>('Afro House');
-
-  useEffect(() => {
-    api.getPlaylists().then(setPlaylists).catch(() => setPlaylists([]));
-  }, []);
+  const [selectedGenre, setSelectedGenre] = useState<string>('');
   const maxTracks = (ai.currentSet as unknown as { max_tracks?: number } | null)?.max_tracks;
 
   const deckAtrack = dj.decks.A.track;
@@ -178,7 +172,6 @@ export function AIPanel() {
       deckATrackId: deckAtrack?.id,
       deckBTrackId: deckBtrack?.id,
       numTracks: setLength,
-      playlistId: selectedPlaylistId || undefined,
       genre: selectedGenre || undefined,
       durationMinutes: setLength ? undefined : targetDuration || undefined,
     });
@@ -235,22 +228,6 @@ export function AIPanel() {
             {/* Mix source and constraints */}
             <div className="space-y-2 rounded-lg border border-rbox-line bg-rbox-panel2/50 p-3">
               <label className="block text-[10px] font-mono text-rbox-dim uppercase tracking-wider">
-                Source playlist
-                <select
-                  value={selectedPlaylistId}
-                  onChange={(e) => setSelectedPlaylistId(e.target.value)}
-                  disabled={ai.isGenerating}
-                  className="mt-1 block w-full text-xs normal-case bg-rbox-panel3 text-rbox-text border border-rbox-line rounded px-2 py-1.5 disabled:opacity-50"
-                >
-                  <option value="">Entire library</option>
-                  {playlists.map((playlist) => (
-                    <option key={playlist.id} value={playlist.id}>
-                      {playlist.name} ({playlist.track_ids.length} tracks)
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="block text-[10px] font-mono text-rbox-dim uppercase tracking-wider">
                 Genre filter
                 <select
                   value={selectedGenre}
@@ -292,7 +269,7 @@ export function AIPanel() {
                 </select>
               </div>
               <p className="text-[9px] text-rbox-dim">
-                A selected playlist is a strict boundary. If it doesn't contain enough matching tracks, generation fails instead of pulling from the full library.
+                AI mixes use your full analyzed library. Genre and set-mode filters can still narrow the tracks used.
               </p>
             </div>
 
@@ -308,7 +285,6 @@ export function AIPanel() {
                       deckATrackId: deckAtrack?.id,
                       deckBTrackId: deckBtrack?.id,
                       numTracks: setLength,
-                      playlistId: selectedPlaylistId || undefined,
                       genre: selectedGenre || undefined,
                       durationMinutes: setLength ? undefined : targetDuration || undefined,
                     });
