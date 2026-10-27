@@ -36,7 +36,7 @@ mapping. If the CSV was already reordered before this migration runs, old playli
 may have been pointing at the wrong tracks already; review those playlists after upgrading.
 
 Keep song paths consistent when regenerating `library.csv`; changing a track's path changes
-its derived ID unless the CSV has a persistent `track_id` column with a `trk_` ID.
+its derived ID.
 
 ## Fixing analysis mistakes
 
