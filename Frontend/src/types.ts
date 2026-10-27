@@ -53,7 +53,6 @@ export interface AISetRequest {
   deck_b_track_id?: string;
   num_tracks?: number;
   target_bpm?: number;
-  playlist_id?: string;
   genre?: string;
   duration_minutes?: number;
 }

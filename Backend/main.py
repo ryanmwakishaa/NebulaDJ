@@ -1,8 +1,10 @@
 import csv
+import hashlib
 import math
 import os
 import random
 import re
+import shutil
 import sqlite3
 import threading
 import uuid
@@ -123,6 +125,77 @@ def _as_float(value: Any) -> float | None:
         return None
 
 
+def _stable_track_id(row: dict[str, Any], index: int) -> str:
+    """Return an ID that does not change when CSV rows are reordered."""
+    explicit_id = (row.get("track_id") or "").strip()
+    if explicit_id.startswith("trk_"):
+        return explicit_id
+
+    raw_path = (row.get("path") or row.get("file_path") or "").strip()
+    if raw_path:
+        normalized_path = os.path.normpath(raw_path).replace("\\", "/").casefold()
+        identity = f"path:{normalized_path}"
+    else:
+        title = (row.get("title") or "untitled").strip().casefold()
+        artist = (row.get("artist") or "Unknown artist").strip().casefold()
+        album = (row.get("album") or "").strip().casefold()
+        bpm = (row.get("bpm") or "").strip()
+        key = (row.get("key") or "").strip().casefold()
+        identity = f"metadata:{artist}|{title}|{album}|{bpm}|{key}"
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
+    return f"trk_{digest}"
+
+
+def _migrate_legacy_playlist_track_ids(tracks: list[dict[str, Any]]) -> None:
+    """Best-effort migrate old playlist IDs that were CSV row indexes."""
+    if not PLAYLISTS_DB.exists():
+        return
+    index_to_id = {str(index): track["id"] for index, track in enumerate(tracks)}
+
+    # Take a one-time backup before touching legacy playlist membership.
+    check_connection = sqlite3.connect(PLAYLISTS_DB, timeout=10)
+    try:
+        has_legacy_ids = any(
+            str(row[0]).isdigit()
+            for row in check_connection.execute("SELECT track_id FROM playlist_tracks")
+        )
+    finally:
+        check_connection.close()
+    backup_path = PLAYLISTS_DB.with_name(PLAYLISTS_DB.name + ".pre-stable-ids.bak")
+    if has_legacy_ids and not backup_path.exists():
+        shutil.copy2(PLAYLISTS_DB, backup_path)
+
+    with _playlist_db() as connection:
+        rows = connection.execute(
+            "SELECT playlist_id, track_id, position FROM playlist_tracks"
+        ).fetchall()
+        for row in rows:
+            old_id = str(row["track_id"])
+            if not old_id.isdigit():
+                continue
+            new_id = index_to_id.get(old_id)
+            if new_id is None:
+                connection.execute(
+                    "DELETE FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?",
+                    (row["playlist_id"], old_id),
+                )
+                continue
+            exists = connection.execute(
+                "SELECT 1 FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?",
+                (row["playlist_id"], new_id),
+            ).fetchone()
+            if exists:
+                connection.execute(
+                    "DELETE FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?",
+                    (row["playlist_id"], old_id),
+                )
+            else:
+                connection.execute(
+                    "UPDATE playlist_tracks SET track_id = ? WHERE playlist_id = ? AND track_id = ?",
+                    (new_id, row["playlist_id"], old_id),
+                )
+
+
 def _read_library() -> list[dict[str, Any]]:
     if not LIBRARY_FILE.exists():
         raise HTTPException(
@@ -135,8 +208,7 @@ def _read_library() -> list[dict[str, Any]]:
 
     tracks: list[dict[str, Any]] = []
     for index, row in enumerate(rows):
-        # Keep IDs stable for this CSV ordering and expose the field names
-        # the React frontend already expects.
+        # Expose the fields the React frontend expects, with an order-independent ID.
         try:
             bpm = float(row.get("bpm") or 0)
         except (TypeError, ValueError):
@@ -153,8 +225,9 @@ def _read_library() -> list[dict[str, Any]]:
         # The analyzer stores energy on a 1..10 scale; UI uses 0..1.
         energy = max(0.0, min(1.0, raw_energy / 10.0 if raw_energy > 1 else raw_energy))
 
+        track_id = _stable_track_id(row, index)
         tracks.append({
-            "id": str(index),
+            "id": track_id,
             "title": (row.get("title") or Path(row.get("path") or f"Track {index + 1}").stem).strip(),
             "artist": (row.get("artist") or "Unknown artist").strip(),
             "album": (row.get("album") or "").strip() or None,
@@ -165,17 +238,18 @@ def _read_library() -> list[dict[str, Any]]:
             "duration_sec": duration,
             "file_path": (row.get("path") or row.get("file_path") or "").strip(),
             "first_downbeat_sec": _as_float(row.get("first_downbeat") or row.get("first_downbeat_sec")),
-            "audio_url": f"/api/audio/{index}",
+            "audio_url": f"/api/audio/{track_id}",
             "file_format": Path(row.get("path") or row.get("file_path") or "").suffix.lstrip(".").lower() or None,
         })
+    _migrate_legacy_playlist_track_ids(tracks)
     return tracks
 
 
-def _get_track_or_404(track_id: int) -> dict[str, Any]:
-    tracks = _read_library()
-    if track_id < 0 or track_id >= len(tracks):
+def _get_track_or_404(track_id: str) -> dict[str, Any]:
+    track = next((item for item in _read_library() if item["id"] == str(track_id)), None)
+    if track is None:
         raise HTTPException(status_code=404, detail="Track not found")
-    return tracks[track_id]
+    return track
 
 
 def _find_audio_file(track: dict[str, Any]) -> Path:
@@ -218,6 +292,9 @@ def health() -> dict[str, str]:
 
 @app.get("/api/playlists")
 def get_playlists() -> list[dict[str, Any]]:
+    # Migrate legacy row-index IDs before returning playlist membership to the UI.
+    if LIBRARY_FILE.exists():
+        _read_library()
     with _playlist_db() as connection:
         rows = connection.execute(
             "SELECT id FROM playlists ORDER BY created_at DESC, id DESC"
@@ -265,13 +342,7 @@ def delete_playlist(playlist_id: str) -> None:
 
 @app.post("/api/playlists/{playlist_id}/tracks/{track_id}")
 def add_track_to_playlist(playlist_id: str, track_id: str) -> dict[str, Any]:
-    # Track IDs are currently CSV row indexes in this backend.
-    try:
-        numeric_track_id = int(track_id)
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=404, detail="Track not found")
-
-    _get_track_or_404(numeric_track_id)
+    _get_track_or_404(track_id)
 
     with _playlist_db() as connection:
         exists = connection.execute(
@@ -286,7 +357,7 @@ def add_track_to_playlist(playlist_id: str, track_id: str) -> dict[str, Any]:
             SELECT 1 FROM playlist_tracks
             WHERE playlist_id = ? AND track_id = ?
             """,
-            (playlist_id, str(numeric_track_id)),
+            (playlist_id, track_id),
         ).fetchone()
 
         if already_added is None:
@@ -302,7 +373,7 @@ def add_track_to_playlist(playlist_id: str, track_id: str) -> dict[str, Any]:
                 INSERT INTO playlist_tracks (playlist_id, track_id, position)
                 VALUES (?, ?, ?)
                 """,
-                (playlist_id, str(numeric_track_id), position_row["next_position"]),
+                (playlist_id, track_id, position_row["next_position"]),
             )
 
         playlist = _playlist_to_dict(connection, playlist_id)
@@ -396,8 +467,7 @@ def get_tracks(
     return tracks[offset:offset + limit]
 
 
-# NOTE: /genres and /keys must stay above /{track_id}, or FastAPI will try to
-# parse "genres" as an integer ID.
+# NOTE: /genres and /keys must stay above /{track_id} so their static routes win.
 @app.get("/api/tracks/genres")
 def get_genres() -> list[str]:
     return sorted({track["genre"] for track in _read_library() if track["genre"]})
@@ -409,19 +479,19 @@ def get_keys() -> list[str]:
 
 
 @app.get("/api/tracks/{track_id}")
-def get_track(track_id: int) -> dict[str, Any]:
+def get_track(track_id: str) -> dict[str, Any]:
     return _get_track_or_404(track_id)
 
 
 @app.get("/api/tracks/{track_id}/audio")
-def get_track_audio(track_id: int) -> dict[str, str]:
+def get_track_audio(track_id: str) -> dict[str, str]:
     _get_track_or_404(track_id)
     # Relative URL means the frontend can build the right origin from BASE_URL.
     return {"url": f"/api/audio/{track_id}"}
 
 
 @app.get("/api/audio/{track_id}")
-def stream_audio(track_id: int) -> FileResponse:
+def stream_audio(track_id: str) -> FileResponse:
     track = _get_track_or_404(track_id)
     audio_path = _find_audio_file(track)
     media_type = "audio/mpeg" if audio_path.suffix.lower() == ".mp3" else "audio/*"
@@ -429,7 +499,7 @@ def stream_audio(track_id: int) -> FileResponse:
 
 
 @app.get("/api/tracks/{track_id}/waveform")
-def get_waveform(track_id: int, points: int = Query(800, ge=50, le=5000)) -> dict[str, Any]:
+def get_waveform(track_id: str, points: int = Query(800, ge=50, le=5000)) -> dict[str, Any]:
     """Approximate waveform.
 
     Real peak extraction needs an audio decoder (librosa / soundfile / ffmpeg).
@@ -438,7 +508,7 @@ def get_waveform(track_id: int, points: int = Query(800, ge=50, le=5000)) -> dic
     track and scales loosely with the track's energy.
     """
     track = _get_track_or_404(track_id)
-    rng = random.Random(track_id)
+    rng = random.Random(int(hashlib.sha256(track_id.encode("utf-8")).hexdigest()[:8], 16))
     base = 0.35 + 0.45 * track["energy"]
     peaks: list[float] = []
     for i in range(points):
@@ -610,17 +680,18 @@ def _recommend(refs: list[dict[str, Any]], mode: str, limit: int) -> list[dict[s
 def ai_recommendations_for_decks(
     mode: str = "auto",
     limit: int = Query(8, ge=1, le=50),
-    deck_a: int | None = None,
-    deck_b: int | None = None,
+    deck_a: str | None = None,
+    deck_b: str | None = None,
 ) -> list[dict[str, Any]]:
     tracks = _read_library()
-    refs = [tracks[i] for i in (deck_a, deck_b) if i is not None and 0 <= i < len(tracks)]
+    by_id = {track["id"]: track for track in tracks}
+    refs = [by_id[track_id] for track_id in (deck_a, deck_b) if track_id in by_id]
     return _recommend(refs, _norm_mode(mode), limit)
 
 
 @app.get("/api/ai/recommendations/{track_id}")
 def ai_recommendations_for_track(
-    track_id: int,
+    track_id: str,
     mode: str = "auto",
     limit: int = Query(8, ge=1, le=50),
 ) -> list[dict[str, Any]]:
@@ -780,17 +851,8 @@ def _build_set(req: AISetRequest) -> dict[str, Any]:
     library = _read_library()
     pool = library
 
-    # If a playlist is selected, it is the hard source boundary. Never silently
-    # pull tracks from the full library to fill gaps in a curated playlist.
-    if req.playlist_id:
-        with _playlist_db() as connection:
-            playlist = _playlist_to_dict(connection, req.playlist_id)
-        if playlist is None:
-            raise HTTPException(status_code=404, detail="Playlist not found")
-        playlist_ids = set(playlist["track_ids"])
-        pool = [t for t in library if t["id"] in playlist_ids]
-        if not pool:
-            raise HTTPException(status_code=400, detail="This playlist has no tracks in the current library")
+    # AI set generation always uses the full analyzed library.
+    # Playlists remain available for organizing tracks, but do not constrain AI mixes.
 
     if req.genre:
         pool = [t for t in pool if t["genre"].casefold() == req.genre.casefold()]
@@ -813,12 +875,12 @@ def _build_set(req: AISetRequest) -> dict[str, Any]:
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Only {max_tracks} track(s) match the selected playlist and filters. "
+                f"Only {max_tracks} track(s) match the active filters. "
                 "At least 2 matching tracks are required to generate a mix."
             ),
         )
     if req.duration_minutes and requested and requested > max_tracks:
-        source_name = "selected playlist" if req.playlist_id else "library"
+        source_name = "library"
         raise HTTPException(
             status_code=400,
             detail=(
