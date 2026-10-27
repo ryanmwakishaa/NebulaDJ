@@ -26,6 +26,18 @@ Useful options for `mix`: `--seed N` (repeatable set; omit for a different one e
 Songs named `Artist - Title.mp3` are labelled automatically (ID3 tags are used if present).
 Results are cached in `.dj_cache.json` inside the songs folder, so re-runs are fast.
 
+## Stable track IDs and playlists
+
+The API derives each track ID from its normalized file path, so sorting or inserting rows
+in `library.csv` no longer changes IDs. Playlist membership stores these stable IDs in
+`nebula_playlists.db`. Existing playlists that still contain numeric row-index IDs are
+migrated on the first library read, using the current CSV ordering as the best available
+mapping. If the CSV was already reordered before this migration runs, old playlist entries
+may have been pointing at the wrong tracks already; review those playlists after upgrading.
+
+Keep song paths consistent when regenerating `library.csv`; changing a track's path changes
+its derived ID unless the CSV has a persistent `track_id` column with a `trk_` ID.
+
 ## Fixing analysis mistakes
 
 Automatic detection is good on steady dance music but not perfect (key detection is the
