@@ -122,21 +122,25 @@ function App() {
       </header>
 
       {/* ===== Main Workspace =====
-          Deck workspace first; full-width track library beneath it. */}
+          Keep both decks side by side on desktop; place mixer, AI and library underneath. */}
       <main className="flex flex-col gap-3 p-2 lg:p-3 min-w-0">
-        {/* Main DJ workspace: side-by-side decks, central mixer, AI panel on the right. */}
-        <section className="grid grid-cols-1 2xl:grid-cols-[minmax(0,1fr)_340px] gap-3 min-w-0 items-start">
-          <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] xl:grid-cols-[minmax(0,1fr)_112px_minmax(0,1fr)] 2xl:grid-cols-[minmax(0,1fr)_132px_minmax(0,1fr)] gap-2 min-w-0 items-stretch">
-            <div className="min-w-0"><DeckPanel deck="A" /></div>
-            <div className="min-w-0 xl:row-auto"><Mixer /></div>
-            <div className="min-w-0"><DeckPanel deck="B" /></div>
-          </div>
-          <aside className="w-full min-w-0 h-[560px]">
-            <AIPanel />
-          </aside>
+        {/* Decks: exactly two columns at desktop widths, so the mixer cannot force either deck onto a new row. */}
+        <section className="grid grid-cols-1 md:grid-cols-2 gap-3 min-w-0 items-stretch">
+          <div className="min-w-0"><DeckPanel deck="A" /></div>
+          <div className="min-w-0"><DeckPanel deck="B" /></div>
         </section>
 
-        {/* Generous library section under the decks, with room for search, playlists and track metadata. */}
+        {/* Mixer gets its own row below the decks. */}
+        <section className="w-full min-w-0">
+          <Mixer />
+        </section>
+
+        {/* AI tools sit below the deck workspace, not in a fixed right sidebar. */}
+        <section className="w-full min-w-0 min-h-[420px]">
+          <AIPanel />
+        </section>
+
+        {/* Dedicated full-width track library beneath the decks and mixer. */}
         <section className="w-full min-w-0 min-h-[380px]">
           <TrackBrowser
             collapsed={!libraryOpen}
