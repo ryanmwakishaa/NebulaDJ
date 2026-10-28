@@ -122,42 +122,27 @@ function App() {
       </header>
 
       {/* ===== Main Workspace =====
-          Wide screens (2xl and up): decks on the left, AI panel on the right.
-          Smaller screens: AI panel drops underneath so nothing gets squeezed. */}
-      <main className="flex-1 flex flex-col 2xl:flex-row gap-2 p-2 min-h-0">
-        {/* Left: Decks + Mixer + Library */}
-        <div className="flex flex-col gap-2 min-w-0 flex-1">
-          {/* Decks + Mixer row. Scrolls sideways on narrow windows instead of
-              clipping the pitch / volume / level meters. */}
-          <div className="flex items-start gap-2 shrink-0 overflow-x-auto scroll-thin pb-1">
-            <div className="flex-1 min-w-[640px]">
-              <DeckPanel deck="A" />
-            </div>
-            <div className="shrink-0">
-              <Mixer />
-            </div>
-            <div className="flex-1 min-w-[640px]">
-              <DeckPanel deck="B" />
-            </div>
-          </div>
+          Decks use the full width; the library and AI tools share the row below. */}
+      <main className="flex flex-col gap-3 p-3 min-w-0">
+        {/* Full-width deck row: no horizontal scrolling or forced 640px decks. */}
+        <section className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_148px_minmax(0,1fr)] gap-3 min-w-0 items-stretch">
+          <div className="min-w-0"><DeckPanel deck="A" /></div>
+          <div className="min-w-0"><Mixer /></div>
+          <div className="min-w-0"><DeckPanel deck="B" /></div>
+        </section>
 
-          {/* Track library: click its header to collapse / expand. It stays mounted
-              when collapsed, so your search and filters are kept. */}
-          <div className={libraryOpen ? 'flex-1 min-h-[340px]' : 'shrink-0'}>
+        {/* Library gets most of the lower workspace; AI panel remains accessible beside it. */}
+        <section className="grid grid-cols-1 2xl:grid-cols-[minmax(0,1fr)_360px] gap-3 min-w-0 items-start">
+          <div className={libraryOpen ? 'min-w-0 min-h-[340px]' : 'min-w-0 shrink-0'}>
             <TrackBrowser
               collapsed={!libraryOpen}
               onToggleCollapsed={() => setLibraryOpen((open) => !open)}
             />
           </div>
-        </div>
-
-        {/* AI Panel: absolutely positioned inside its box on wide screens so its
-            content can never stretch the rest of the layout. */}
-        <div className="relative w-full 2xl:w-[360px] h-[560px] 2xl:h-auto 2xl:min-h-[560px] shrink-0">
-          <div className="h-full 2xl:absolute 2xl:inset-0">
+          <div className="w-full min-w-0 h-[560px]">
             <AIPanel />
           </div>
-        </div>
+        </section>
       </main>
 
       {/* ===== Status Bar ===== */}
