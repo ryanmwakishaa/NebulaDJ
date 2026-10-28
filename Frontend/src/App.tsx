@@ -122,27 +122,29 @@ function App() {
       </header>
 
       {/* ===== Main Workspace =====
-          Decks use the full width; the library and AI tools share the row below. */}
-      <main className="flex flex-col gap-3 p-3 min-w-0">
-        {/* Full-width deck row: no horizontal scrolling or forced 640px decks. */}
-        <section className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_148px_minmax(0,1fr)] gap-3 min-w-0 items-stretch">
-          <div className="min-w-0"><DeckPanel deck="A" /></div>
-          <div className="min-w-0"><Mixer /></div>
-          <div className="min-w-0"><DeckPanel deck="B" /></div>
-        </section>
-
-        {/* Library gets most of the lower workspace; AI panel remains accessible beside it. */}
-        <section className="grid grid-cols-1 2xl:grid-cols-[minmax(0,1fr)_360px] gap-3 min-w-0 items-start">
-          <div className={libraryOpen ? 'min-w-0 min-h-[340px]' : 'min-w-0 shrink-0'}>
+          Desktop: library sidebar, side-by-side decks in the centre, AI tools on the right. */}
+      <main className="flex-1 min-w-0 p-2 lg:p-3">
+        <div className="grid grid-cols-1 xl:grid-cols-[220px_minmax(0,1fr)_300px] 2xl:grid-cols-[250px_minmax(0,1fr)_340px] gap-3 min-w-0 items-start">
+          {/* Left sidebar: keep the track library beside the decks on desktop. */}
+          <aside className={libraryOpen ? 'min-w-0 xl:sticky xl:top-2' : 'min-w-0'}>
             <TrackBrowser
               collapsed={!libraryOpen}
               onToggleCollapsed={() => setLibraryOpen((open) => !open)}
             />
-          </div>
-          <div className="w-full min-w-0 h-[560px]">
+          </aside>
+
+          {/* Centre: both decks stay side-by-side on desktop, with the mixer between them. */}
+          <section className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] xl:grid-cols-[minmax(0,1fr)_112px_minmax(0,1fr)] 2xl:grid-cols-[minmax(0,1fr)_132px_minmax(0,1fr)] gap-2 min-w-0 items-stretch">
+            <div className="min-w-0"><DeckPanel deck="A" /></div>
+            <div className="min-w-0 xl:row-auto"><Mixer /></div>
+            <div className="min-w-0"><DeckPanel deck="B" /></div>
+          </section>
+
+          {/* Right sidebar: AI tools stay beside the workspace on wide screens. */}
+          <aside className="w-full min-w-0 h-[560px] xl:sticky xl:top-2">
             <AIPanel />
-          </div>
-        </section>
+          </aside>
+        </div>
       </main>
 
       {/* ===== Status Bar ===== */}
