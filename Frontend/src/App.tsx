@@ -122,30 +122,24 @@ function App() {
       </header>
 
       {/* ===== Main Workspace =====
-          Keep both decks side by side on desktop; place mixer, AI and library underneath. */}
-      <main className="flex flex-col gap-3 p-2 lg:p-3 min-w-0">
-        {/* Decks: exactly two columns at desktop widths, so the mixer cannot force either deck onto a new row. */}
+          Two decks side by side, then a wide mixer and dedicated library below. */}
+      <main className="flex flex-col gap-4 p-2 lg:p-3 min-w-0">
         <section className="grid grid-cols-1 md:grid-cols-2 gap-3 min-w-0 items-stretch">
           <div className="min-w-0"><DeckPanel deck="A" /></div>
           <div className="min-w-0"><DeckPanel deck="B" /></div>
         </section>
 
-        {/* Mixer gets its own row below the decks. */}
-        <section className="w-full min-w-0">
-          <Mixer />
-        </section>
+        <Mixer />
 
-        {/* AI tools sit below the deck workspace, not in a fixed right sidebar. */}
-        <section className="w-full min-w-0 min-h-[420px]">
-          <AIPanel />
-        </section>
-
-        {/* Dedicated full-width track library beneath the decks and mixer. */}
         <section className="w-full min-w-0 min-h-[380px]">
           <TrackBrowser
             collapsed={!libraryOpen}
             onToggleCollapsed={() => setLibraryOpen((open) => !open)}
           />
+        </section>
+
+        <section className="w-full min-w-0 min-h-[420px]">
+          <AIPanel />
         </section>
       </main>
 
