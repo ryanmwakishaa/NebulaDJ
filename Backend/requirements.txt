@@ -1,5 +1,9 @@
 # virtual_dj.py (the planner) needs nothing beyond Python 3.9+.
 # dj_audio.py (analysis + mix rendering) needs these:
+fastapi>=0.110
+uvicorn[standard]>=0.27
+pydantic>=2.6
+
 numpy>=1.24
 scipy>=1.10
 soundfile>=0.12
