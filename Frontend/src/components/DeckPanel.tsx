@@ -65,11 +65,11 @@ export function DeckPanel({ deck }: DeckPanelProps) {
         )}
       </div>
 
-      <div className="flex flex-row gap-3 p-3">
+      <div className="flex flex-col sm:flex-row gap-2 sm:gap-3 p-2 sm:p-3 min-w-0">
         {/* Left: Artwork + Vinyl + Transport */}
-        <div className="flex flex-col items-center gap-2 w-[170px] shrink-0">
+        <div className="flex flex-row sm:flex-col items-center justify-around sm:justify-start gap-2 w-full sm:w-[150px] lg:w-[160px] shrink-0">
           {/* Album artwork / vinyl */}
-          <div className="relative w-[150px] h-[150px] flex items-center justify-center">
+          <div className="relative w-[88px] h-[88px] sm:w-[120px] sm:h-[120px] lg:w-[140px] lg:h-[140px] shrink-0 flex items-center justify-center">
             <div
               className="absolute inset-0 rounded-full"
               style={{
@@ -85,20 +85,20 @@ export function DeckPanel({ deck }: DeckPanelProps) {
               <img
                 src={track.artwork_url}
                 alt={track.title}
-                className={`w-[130px] h-[130px] rounded-full object-cover ${isPlaying ? 'spin-33' : ''}`}
+                className={`w-[76px] h-[76px] sm:w-[104px] sm:h-[104px] lg:w-[122px] lg:h-[122px] rounded-full object-cover ${isPlaying ? 'spin-33' : ''}`}
                 style={{ animationDuration: `${2.0 / rate}s` }}
                 crossOrigin="anonymous"
               />
             ) : (
               <div
-                className={`w-[130px] h-[130px] rounded-full flex items-center justify-center ${isPlaying ? 'spin-33' : ''}`}
+                className={`w-[76px] h-[76px] sm:w-[104px] sm:h-[104px] lg:w-[122px] lg:h-[122px] rounded-full flex items-center justify-center ${isPlaying ? 'spin-33' : ''}`}
                 style={{
                   background: `repeating-radial-gradient(circle at 50% 50%, #111 0px, #111 1px, #1a1a1a 2px, #1a1a1a 3px)`,
                   animationDuration: `${2.0 / rate}s`,
                 }}
               >
                 <div
-                  className="w-[50px] h-[50px] rounded-full flex items-center justify-center"
+                  className="w-[36px] h-[36px] sm:w-[44px] sm:h-[44px] rounded-full flex items-center justify-center"
                   style={{
                     background: `radial-gradient(circle, ${accent}33, #0a0b0e)`,
                     border: `1px solid ${accent}44`,
