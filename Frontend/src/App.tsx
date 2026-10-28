@@ -122,29 +122,27 @@ function App() {
       </header>
 
       {/* ===== Main Workspace =====
-          Desktop: library sidebar, side-by-side decks in the centre, AI tools on the right. */}
-      <main className="flex-1 min-w-0 p-2 lg:p-3">
-        <div className="grid grid-cols-1 xl:grid-cols-[220px_minmax(0,1fr)_300px] 2xl:grid-cols-[250px_minmax(0,1fr)_340px] gap-3 min-w-0 items-start">
-          {/* Left sidebar: keep the track library beside the decks on desktop. */}
-          <aside className={libraryOpen ? 'min-w-0 xl:sticky xl:top-2' : 'min-w-0'}>
-            <TrackBrowser
-              collapsed={!libraryOpen}
-              onToggleCollapsed={() => setLibraryOpen((open) => !open)}
-            />
-          </aside>
-
-          {/* Centre: both decks stay side-by-side on desktop, with the mixer between them. */}
-          <section className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] xl:grid-cols-[minmax(0,1fr)_112px_minmax(0,1fr)] 2xl:grid-cols-[minmax(0,1fr)_132px_minmax(0,1fr)] gap-2 min-w-0 items-stretch">
+          Deck workspace first; full-width track library beneath it. */}
+      <main className="flex flex-col gap-3 p-2 lg:p-3 min-w-0">
+        {/* Main DJ workspace: side-by-side decks, central mixer, AI panel on the right. */}
+        <section className="grid grid-cols-1 2xl:grid-cols-[minmax(0,1fr)_340px] gap-3 min-w-0 items-start">
+          <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] xl:grid-cols-[minmax(0,1fr)_112px_minmax(0,1fr)] 2xl:grid-cols-[minmax(0,1fr)_132px_minmax(0,1fr)] gap-2 min-w-0 items-stretch">
             <div className="min-w-0"><DeckPanel deck="A" /></div>
             <div className="min-w-0 xl:row-auto"><Mixer /></div>
             <div className="min-w-0"><DeckPanel deck="B" /></div>
-          </section>
-
-          {/* Right sidebar: AI tools stay beside the workspace on wide screens. */}
-          <aside className="w-full min-w-0 h-[560px] xl:sticky xl:top-2">
+          </div>
+          <aside className="w-full min-w-0 h-[560px]">
             <AIPanel />
           </aside>
-        </div>
+        </section>
+
+        {/* Generous library section under the decks, with room for search, playlists and track metadata. */}
+        <section className="w-full min-w-0 min-h-[380px]">
+          <TrackBrowser
+            collapsed={!libraryOpen}
+            onToggleCollapsed={() => setLibraryOpen((open) => !open)}
+          />
+        </section>
       </main>
 
       {/* ===== Status Bar ===== */}
