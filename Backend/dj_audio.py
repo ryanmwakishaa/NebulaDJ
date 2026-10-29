@@ -761,6 +761,40 @@ def filter_transition(out_seg: np.ndarray, in_seg: np.ndarray) -> np.ndarray:
     return (incoming * in_gain + mid_high * out_gain + low * out_gain * low_gain).astype(np.float32)
 
 
+
+def add_transition_fx(seg: np.ndarray, bpm: float, key: str, style: str,
+                      energy_gap: int = 0) -> np.ndarray:
+    """Add a subtle generated whistle and filtered riser to a transition."""
+    n = seg.shape[1]
+    bars = 2 if style in ("blend", "filter") else 1
+    length = min(n, max(0, int(round(bars * 240.0 / max(1.0, bpm) * SR))))
+    if length < 256:
+        return seg
+    start = n - length
+    x = np.linspace(0.0, 1.0, length, dtype=np.float32)
+    try:
+        number, letter = int(key[:-1]), key[-1].upper()
+        midi = 60 + ((number * 7 + (3 if letter == "B" else 0)) % 12)
+    except Exception:
+        midi = 60
+    f0 = 261.6256 * (2.0 ** ((midi - 60) / 12.0))
+    freq = f0 * (1.0 + 0.65 * x)
+    phase = (2 * np.pi * np.cumsum(freq) / SR).astype(np.float32)
+    whistle = np.sin(phase) + 0.12 * np.sin(2.0 * phase)
+    env = np.sin(np.pi * x) ** 1.6
+    rng = np.random.default_rng((midi * 131 + int(round(bpm)) * 17 + len(style)) & 0xFFFFFFFF)
+    noise = rng.standard_normal(length).astype(np.float32)
+    from scipy.signal import butter, sosfilt
+    noise = sosfilt(butter(2, [500, 7000], btype="bandpass", fs=SR, output="sos"), noise).astype(np.float32)
+    noise /= float(np.max(np.abs(noise)) + 1e-9)
+    rise = np.clip((x - 0.15) / 0.85, 0.0, 1.0) ** 2
+    noise_gain = 0.010 if energy_gap < 2 else 0.018
+    accent = whistle * env * 0.025 + noise * rise * env * noise_gain
+    delay = int(0.008 * SR)
+    right = np.roll(accent, delay) * 0.8
+    seg[:, start:] += np.stack([accent, right]).astype(np.float32)
+    return seg
+
 def loudness_gain(y: np.ndarray, target_db: float = TARGET_DB) -> float:
     """Gain that brings the track's *gated* RMS to target_db. Quiet intros/outros and
     breakdowns are ignored, so a track with a long soft intro isn't turned up too far."""
@@ -929,6 +963,10 @@ def render_mix(entries, out_path: str, overlap_bars: int = 16, ramp_bars: int = 
                     else:
                         mixed = eq_blend(cur[:, q: q + ovl], "out", bar_s) + eq_blend(arr[:, :ovl], "in", bar_s)
                         arr[:, :ovl] = mixed
+                    energy_gap = int(t.energy - entries[i - 1].track.energy)
+                    arr[:, :ovl] = add_transition_fx(
+                        arr[:, :ovl], t.bpm, t.key, styles[i - 1], energy_gap
+                    )
                     base += q
                     cur = arr
                     downbeat_at = 0
