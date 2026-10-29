@@ -570,6 +570,9 @@ def refine_transitions(entries, overlap_bars: int, fx: bool = True, log=print):
         tempo_ok = MIN_RATE <= r_need <= MAX_RATE
         style = "blend"
         reasons = []
+        energy_gap = nx.energy - t.energy
+        # Pick a transition for this pair, rather than applying one preset to the set.
+        # Incompatible tempo/key or a short usable phrase needs a clean exit.
         if fx and (ov < 8 or not keys_ok or not tempo_ok):
             style = "echo"
             ov = 4
@@ -579,11 +582,22 @@ def refine_transitions(entries, overlap_bars: int, fx: bool = True, log=print):
                 reasons.append("tempo gap")
             if cap_out < 8 or cap_in < 8:
                 reasons.append("short intro/outro")
+        elif fx and energy_gap >= 2 and cap_in <= 12:
+            # A rising-energy track with a short intro benefits from a filtered handoff.
+            style = "filter"
+            ov = max(4, min(8, ov))
+            reasons.append(f"energy lift +{energy_gap}")
+        elif fx and energy_gap <= -3 and cap_out >= 8 and cap_in >= 8:
+            # Let a lower-energy incoming section settle in over a longer blend.
+            style = "blend"
+            ov = min(max(8, ov), 16)
+            reasons.append(f"energy reset {energy_gap}")
         mix_out[i] = f + k * bar
         overlaps[i], styles[i] = ov, style
         prev_nL = max(1, int(round(ov / ratio)))
         log(f"  {i + 1}->{i + 2}: mix out at bar {k} ({why}), {style} over {ov} bars"
-            + (f" [{', '.join(reasons)}]" if reasons else ""))
+            + (f" [confidence: {'high' if keys_ok and tempo_ok and cap_in >= 8 and cap_out >= 8 else 'medium' if keys_ok or tempo_ok else 'low'}]"
+               + (f" [{', '.join(reasons)}]" if reasons else "")))
     return mix_out, overlaps, styles
 
 
@@ -727,6 +741,24 @@ def echo_transition(out_seg: np.ndarray, in_seg: np.ndarray, beat_samples: int,
         wet[:, k * d: k * d + n] += (feedback ** k) * feed
     mixed = in_seg + hp * dry_env + 0.9 * wet[:, :n]
     return mixed.astype(np.float32), (0.9 * wet[:, n:]).astype(np.float32)
+
+
+def filter_transition(out_seg: np.ndarray, in_seg: np.ndarray) -> np.ndarray:
+    """Filtered handoff: progressively remove outgoing low end/highs while the new track enters."""
+    from scipy.signal import butter, sosfiltfilt
+    n = min(out_seg.shape[1], in_seg.shape[1])
+    if n < 128:
+        return in_seg.copy()
+    outgoing = out_seg[:, :n]
+    incoming = in_seg[:, :n]
+    # A gentle low-pass sweep on the outgoing track avoids an abrupt full-spectrum clash.
+    low = sosfiltfilt(butter(4, 180, "low", fs=SR, output="sos"), outgoing, axis=1).astype(np.float32)
+    mid_high = outgoing - low
+    x = np.linspace(0.0, 1.0, n, dtype=np.float32)
+    out_gain = np.cos(x * np.pi / 2)
+    low_gain = 1.0 - smoothstep((x - 0.15) / 0.65)
+    in_gain = np.sin(x * np.pi / 2)
+    return (incoming * in_gain + mid_high * out_gain + low * out_gain * low_gain).astype(np.float32)
 
 
 def loudness_gain(y: np.ndarray, target_db: float = TARGET_DB) -> float:
@@ -892,6 +924,8 @@ def render_mix(entries, out_path: str, overlap_bars: int = 16, ramp_bars: int = 
                         m = min(tail.shape[1], arr.shape[1] - ovl)
                         if m > 0:
                             arr[:, ovl: ovl + m] += tail[:, :m]
+                    elif styles[i - 1] == "filter":
+                        arr[:, :ovl] = filter_transition(cur[:, q: q + ovl], arr[:, :ovl])
                     else:
                         mixed = eq_blend(cur[:, q: q + ovl], "out", bar_s) + eq_blend(arr[:, :ovl], "in", bar_s)
                         arr[:, :ovl] = mixed
