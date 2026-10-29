@@ -460,8 +460,12 @@ def structure_from_audio(y: np.ndarray, sr: int, bpm: float, first_downbeat: flo
     last = next((k for k in range(nb - 1, run - 2, -1) if active[k - run + 1:k + 1].all()), None)
     if intro is None or last is None or last < intro:
         return None
+    # Keep the normalized per-bar curve so the transition planner can choose
+    # musical moments across the whole track, not only the outro.
+    profile = np.clip(e[:nb] / (body + 1e-9), 0.0, 2.5)
     return {"nb": nb, "intro_bars": int(intro), "outro_start": int(last) + 1,
-            "outro_bars": int(nb - last - 1), "body": round(body, 3)}
+            "outro_bars": int(nb - last - 1), "body": round(body, 3),
+            "bar_energy": np.round(profile, 3).tolist()}
 
 
 def _struct_key(track: Track) -> str:
@@ -542,22 +546,51 @@ def refine_transitions(entries, overlap_bars: int, fx: bool = True, log=print):
         ratio = bpm_distance(t.bpm, nx.bpm)[1] or 1.0
         nb = st["nb"] if st else None
 
-        # 1. Where to start mixing out: at a phrase (8-bar) boundary at the start of the outro.
-        if st and st["outro_bars"] >= 8:
-            o = st["outro_start"]
-            lo8 = (o // 8) * 8
-            k = lo8 if o - lo8 <= 2 else lo8 + 8
-            why = f"outro from bar {o}"
+        # 1. Pick a phrase boundary from the whole usable body, not just the outro.
+        # Four-bar boundaries give the mix more movement while staying phrase-aware.
+        # Prefer real energy dips / changes, but keep a deterministic pair-specific
+        # choice so repeated renders are reproducible.
+        pair_seed = sum((j + 1) * ord(ch) for j, ch in enumerate(
+            f"{t.title}|{t.artist}|{nx.title}|{nx.artist}"))
+        choice = (pair_seed % 100) / 100.0
+        min_k = max(8, prev_nL + 4, (st["intro_bars"] + 4) if st else 12)
+        max_k = (nb - 4) if nb else max(k_plan, 16)
+        candidates = list(range(((min_k + 3) // 4) * 4, max_k + 1, 4))
+        # Keep candidates away from the incoming intro/body boundary and avoid
+        # transitions so late that the outgoing track has no overlap room.
+        if st and st.get("bar_energy"):
+            profile = st["bar_energy"]
+            candidates = [c for c in candidates if c < len(profile) - 3]
+            if candidates:
+                def candidate_score(c):
+                    before = float(np.mean(profile[max(0, c - 4):c]))
+                    after = float(np.mean(profile[c:min(len(profile), c + 4)]))
+                    # Energy dips and meaningful changes are interesting transition
+                    # moments; mild variation avoids always selecting the deepest dip.
+                    dip = max(0.0, before - after)
+                    change = abs(after - before)
+                    distance = abs(c - k_plan) / max(1, len(profile))
+                    jitter = (((pair_seed * 37 + c * 19) % 101) / 100.0) * 0.18
+                    return dip * 1.8 + change * 0.7 + jitter - distance * 0.12
+                # Candidate windows span early, middle and late sections. A pair-specific
+                # target window prevents every track from switching at the same phase.
+                if len(candidates) > 1:
+                    target = min(candidates) + int(choice * (max(candidates) - min(candidates)))
+                    candidates.sort(key=lambda c: candidate_score(c) - abs(c - target) / len(profile) * 0.16,
+                                    reverse=True)
+        if candidates:
+            k = candidates[0]
+            why = "phrase boundary selected across track"
         else:
-            k = int(round(k_plan / 8)) * 8
-            why = "no clear outro, snapped to a phrase"
+            k = max(8, int(round(k_plan / 4)) * 4)
+            why = "fallback phrase boundary"
         k = max(8, k)
-        # The track must already have finished its own incoming overlap (+ a little groove).
+        # Respect the previous incoming overlap and leave enough audio for this overlap.
         while k < prev_nL + 4:
-            k += 8
+            k += 4
         if nb:
             while k > nb - 4 and k > 8:
-                k -= 8
+                k -= 4
 
         # 2. How long to blend: not past the outgoing outro, not into the incoming body.
         cap_out = max(4, ((nb - k) // 4) * 4) if nb else overlap_bars
@@ -576,10 +609,6 @@ def refine_transitions(entries, overlap_bars: int, fx: bool = True, log=print):
         # track pair and available musical space influence which choice we make.
         # Stable pair-specific randomness makes a render reproducible without making
         # every transition in the set follow the same pattern.
-        pair_seed = sum((j + 1) * ord(ch) for j, ch in enumerate(
-            f"{t.title}|{t.artist}|{nx.title}|{nx.artist}"))
-        choice = (pair_seed % 100) / 100.0
-
         if not fx:
             style = "blend"
         elif ov < 8 or not keys_ok or not tempo_ok:
