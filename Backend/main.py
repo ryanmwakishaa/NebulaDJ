@@ -947,23 +947,23 @@ def _build_set(req: AISetRequest) -> dict[str, Any]:
             chosen = _plan_full_set(chosen, remaining, length, start, end)
         else:
             while len(chosen) < length and remaining:
-            target = start + (end - start) * (len(chosen) / max(length - 1, 1))
-            recent_artists = [c["artist"] for c in chosen[-3:]]
+                target = start + (end - start) * (len(chosen) / max(length - 1, 1))
+                recent_artists = [c["artist"] for c in chosen[-3:]]
 
-            def cost(t: dict[str, Any]) -> float:
-                c = abs(t["energy"] - target)
-                if chosen:
-                    c += 0.8 * (1 - _compat(chosen[-1], t))
-                    # Long sets: don't keep coming back to the same artist
-                    if t["artist"] == chosen[-1]["artist"]:
-                        c += 0.6
-                    elif t["artist"] in recent_artists:
-                        c += 0.25
-                return c
+                def cost(t: dict[str, Any]) -> float:
+                    c = abs(t["energy"] - target)
+                    if chosen:
+                        c += 0.8 * (1 - _compat(chosen[-1], t))
+                        # Long sets: don't keep coming back to the same artist
+                        if t["artist"] == chosen[-1]["artist"]:
+                            c += 0.6
+                        elif t["artist"] in recent_artists:
+                            c += 0.25
+                    return c
 
-            pick = min(remaining, key=cost)
-            remaining.remove(pick)
-            chosen.append(pick)
+                pick = min(remaining, key=cost)
+                remaining.remove(pick)
+                chosen.append(pick)
 
     items: list[dict[str, Any]] = []
     for i, t in enumerate(chosen):
