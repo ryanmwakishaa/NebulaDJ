@@ -850,9 +850,27 @@ def _build_set(req: AISetRequest) -> dict[str, Any]:
 
     library = _read_library()
     pool = library
+    playlist_ordered = False
+    source_name = "library"
 
-    # AI set generation always uses the full analyzed library.
-    # Playlists remain available for organizing tracks, but do not constrain AI mixes.
+    # When a playlist is selected, use its stored position order as the source of truth.
+    # Filtering may remove tracks, but must never reorder the remaining playlist tracks.
+    if req.playlist_id:
+        playlist = None
+        with _playlist_db() as connection:
+            playlist = _playlist_to_dict(connection, req.playlist_id)
+        if playlist is None:
+            raise HTTPException(status_code=404, detail="Selected playlist was not found")
+        by_id = {str(track["id"]): track for track in library}
+        missing_ids = [track_id for track_id in playlist["track_ids"] if track_id not in by_id]
+        if missing_ids:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{len(missing_ids)} playlist track(s) are missing from library.csv. Re-analyze the library or repair the playlist before mixing.",
+            )
+        pool = [by_id[track_id] for track_id in playlist["track_ids"]]
+        playlist_ordered = True
+        source_name = f"playlist '{playlist['name']}'"
 
     if req.genre:
         pool = [t for t in pool if t["genre"].casefold() == req.genre.casefold()]
@@ -880,7 +898,6 @@ def _build_set(req: AISetRequest) -> dict[str, Any]:
             ),
         )
     if req.duration_minutes and requested and requested > max_tracks:
-        source_name = "library"
         raise HTTPException(
             status_code=400,
             detail=(
@@ -892,28 +909,44 @@ def _build_set(req: AISetRequest) -> dict[str, Any]:
 
     length = max(1, min(requested if requested else max_tracks, max_tracks))
 
-    remaining = list(eligible)
-    chosen: list[dict[str, Any]] = []
+    # Playlist mixes follow the user's saved sequence exactly. AI compatibility
+    # scores are still attached below for transition planning, but never reorder tracks.
+    if playlist_ordered:
+        seed_id = next(
+            (v for v in (req.seed_track_id, req.seedTrackId, req.start_track_id,
+                         req.deck_a_track_id, req.deckATrackId) if v is not None),
+            None,
+        )
+        if seed_id is not None and not any(t["id"] == str(seed_id) for t in eligible):
+            raise HTTPException(
+                status_code=400,
+                detail="The selected starting track is not in the chosen playlist or does not match the active filters",
+            )
+        chosen = list(eligible[:length])
+    else:
+        remaining = list(eligible)
+        chosen: list[dict[str, Any]] = []
 
     seed_id = next(
         (v for v in (req.seed_track_id, req.seedTrackId, req.start_track_id,
                      req.deck_a_track_id, req.deckATrackId) if v is not None),
         None,
     )
-    if seed_id is not None:
-        first = next((t for t in eligible if t["id"] == str(seed_id)), None)
-        if first is None:
-            raise HTTPException(
-                status_code=400,
-                detail="The selected starting track is not in the chosen playlist or does not match the active filters",
-            )
-        remaining = [t for t in remaining if t["id"] != first["id"]]
-        chosen.append(first)
+    if not playlist_ordered:
+        if seed_id is not None:
+            first = next((t for t in eligible if t["id"] == str(seed_id)), None)
+            if first is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="The selected starting track is not in the chosen playlist or does not match the active filters",
+                )
+            remaining = [t for t in remaining if t["id"] != first["id"]]
+            chosen.append(first)
 
-    if length > 0.6 * len(eligible):
-        chosen = _plan_full_set(chosen, remaining, length, start, end)
-    else:
-        while len(chosen) < length and remaining:
+        if length > 0.6 * len(eligible):
+            chosen = _plan_full_set(chosen, remaining, length, start, end)
+        else:
+            while len(chosen) < length and remaining:
             target = start + (end - start) * (len(chosen) / max(length - 1, 1))
             recent_artists = [c["artist"] for c in chosen[-3:]]
 
