@@ -571,9 +571,18 @@ def refine_transitions(entries, overlap_bars: int, fx: bool = True, log=print):
         style = "blend"
         reasons = []
         energy_gap = nx.energy - t.energy
-        # Pick a transition for this pair, rather than applying one preset to the set.
-        # Incompatible tempo/key or a short usable phrase needs a clean exit.
-        if fx and (ov < 8 or not keys_ok or not tempo_ok):
+
+        # Controlled spontaneity: compatibility sets the safe choices, while the
+        # track pair and available musical space influence which choice we make.
+        # Stable pair-specific randomness makes a render reproducible without making
+        # every transition in the set follow the same pattern.
+        pair_seed = sum((j + 1) * ord(ch) for j, ch in enumerate(
+            f"{t.title}|{t.artist}|{nx.title}|{nx.artist}"))
+        choice = (pair_seed % 100) / 100.0
+
+        if not fx:
+            style = "blend"
+        elif ov < 8 or not keys_ok or not tempo_ok:
             style = "echo"
             ov = 4
             if not keys_ok:
@@ -582,16 +591,26 @@ def refine_transitions(entries, overlap_bars: int, fx: bool = True, log=print):
                 reasons.append("tempo gap")
             if cap_out < 8 or cap_in < 8:
                 reasons.append("short intro/outro")
-        elif fx and energy_gap >= 2 and cap_in <= 12:
-            # A rising-energy track with a short intro benefits from a filtered handoff.
+        elif energy_gap >= 2 and cap_in <= 12:
             style = "filter"
             ov = max(4, min(8, ov))
             reasons.append(f"energy lift +{energy_gap}")
-        elif fx and energy_gap <= -3 and cap_out >= 8 and cap_in >= 8:
-            # Let a lower-energy incoming section settle in over a longer blend.
+        elif energy_gap <= -3 and cap_out >= 8 and cap_in >= 8:
             style = "blend"
             ov = min(max(8, ov), 16)
             reasons.append(f"energy reset {energy_gap}")
+        elif choice < 0.18 and cap_in >= 8 and cap_out >= 8:
+            # Occasional clean filtered handoff for variety, only with enough phrase room.
+            style = "filter"
+            ov = max(8, min(ov, 12))
+            reasons.append("variation")
+        elif choice < 0.30:
+            # Short echo exits are a deliberate accent, not the default.
+            style = "echo"
+            ov = 4
+            reasons.append("variation")
+        else:
+            style = "blend"
         mix_out[i] = f + k * bar
         overlaps[i], styles[i] = ov, style
         prev_nL = max(1, int(round(ov / ratio)))
@@ -963,10 +982,9 @@ def render_mix(entries, out_path: str, overlap_bars: int = 16, ramp_bars: int = 
                     else:
                         mixed = eq_blend(cur[:, q: q + ovl], "out", bar_s) + eq_blend(arr[:, :ovl], "in", bar_s)
                         arr[:, :ovl] = mixed
-                    energy_gap = int(t.energy - entries[i - 1].track.energy)
-                    arr[:, :ovl] = add_transition_fx(
-                        arr[:, :ovl], t.bpm, t.key, styles[i - 1], energy_gap
-                    )
+                    # Do not synthesize a whistle/riser on every transition.
+                    # The transition itself should come from phrase timing and the audio.
+                    # Optional generated FX can be reintroduced later as a sparse, tested layer.
                     base += q
                     cur = arr
                     downbeat_at = 0
