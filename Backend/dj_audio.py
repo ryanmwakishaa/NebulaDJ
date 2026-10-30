@@ -1112,7 +1112,7 @@ def cmd_mix(args):
     print_set(entries, verbose=not args.quiet)
     if args.plan_only:
         if len(entries) > 1 and not args.no_structure:
-            print("\\nSearching full-track transition cues...")
+            print("\nSearching full-track transition cues...")
             refine_transitions(
                 entries, args.overlap_bars, fx=not args.no_fx, log=print
             )
