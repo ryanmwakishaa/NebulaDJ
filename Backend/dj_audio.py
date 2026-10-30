@@ -768,6 +768,31 @@ def echo_transition(out_seg: np.ndarray, in_seg: np.ndarray, beat_samples: int,
     return mixed.astype(np.float32), (0.9 * wet[:, n:]).astype(np.float32)
 
 
+def filter_transition(out_seg: np.ndarray, in_seg: np.ndarray) -> np.ndarray:
+    """Filtered handoff: progressively remove outgoing low end and highs as the
+    incoming track rises. This is distinct from the full EQ blend."""
+    from scipy.signal import butter, sosfiltfilt
+
+    n = min(out_seg.shape[1], in_seg.shape[1])
+    if n < 128:
+        return in_seg[:, :n].copy()
+    outgoing = out_seg[:, :n]
+    incoming = in_seg[:, :n]
+    low = sosfiltfilt(
+        butter(4, 180, "low", fs=SR, output="sos"), outgoing, axis=1
+    ).astype(np.float32)
+    mid_high = outgoing - low
+    x = np.linspace(0.0, 1.0, n, dtype=np.float32)
+    out_gain = np.cos(x * np.pi / 2)
+    low_gain = 1.0 - smoothstep((x - 0.15) / 0.65)
+    in_gain = np.sin(x * np.pi / 2)
+    return (
+        incoming * in_gain
+        + mid_high * out_gain
+        + low * out_gain * low_gain
+    ).astype(np.float32)
+
+
 def loudness_gain(y: np.ndarray, target_db: float = TARGET_DB) -> float:
     """Gain that brings the track's *gated* RMS to target_db. Quiet intros/outros and
     breakdowns are ignored, so a track with a long soft intro isn't turned up too far."""
@@ -946,6 +971,10 @@ def render_mix(entries, out_path: str, overlap_bars: int = 16, ramp_bars: int = 
                         m = min(tail.shape[1], arr.shape[1] - ovl)
                         if m > 0:
                             arr[:, ovl: ovl + m] += tail[:, :m]
+                    elif styles[i - 1] == "filter":
+                        arr[:, :ovl] = filter_transition(
+                            cur[:, q: q + ovl], arr[:, :ovl]
+                        )
                     else:
                         mixed = eq_blend(cur[:, q: q + ovl], "out", bar_s) + eq_blend(arr[:, :ovl], "in", bar_s)
                         arr[:, :ovl] = mixed
