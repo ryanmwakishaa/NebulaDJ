@@ -861,10 +861,10 @@ def render_mix(entries, out_path: str, overlap_bars: int = 16, ramp_bars: int = 
                     raise FileNotFoundError(f"audio file missing for '{t.title}': {t.path!r}")
                 y = to_stereo(load_audio(t.path, SR, mono=False))
                 y *= loudness_gain(y, target_db)
+                is_first, is_last = i == 0, i == n - 1
                 # Later tracks may enter at a cue point selected from anywhere in the source.
                 f = t.first_downbeat if is_first else entry_cues[i]
                 bar = 240.0 / t.bpm
-                is_first, is_last = i == 0, i == n - 1
                 kM = None if is_last else max(1, int(round((mix_out[i] - f) / bar)))
                 ov_out = None if is_last else ovs[i]          # blend length leaving this track
                 ov_in = None if is_first else ovs[i - 1]      # blend length entering this track
