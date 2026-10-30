@@ -9,13 +9,12 @@ Audio front-end for the virtual DJ.
            (bass-swap) crossfade, then the incoming track eases back to its
            own tempo.
 
-What the mixer does on top of that (v2):
-  * Structure-aware mix points: each track's intro / body / outro is found from
-    its per-bar energy, so a mix starts where the outgoing track's outro starts
-    and never runs longer than the incoming track's intro.
-  * Transition styles: long EQ blend when tempo + key fit, short "echo-out"
-    (bass cut, delay tail, hard drop-in on the phrase) when they don't.
-  * Gated loudness matching per track and a look-ahead limiter on the master.
+What the mixer does:
+  * Searches phrase-aligned exit and entry cues across the usable sections of both tracks.
+  * Scores candidate cue pairs using their normalized per-bar energy profiles.
+  * Chooses a transition style from tempo, key and energy compatibility.
+  * Optionally layers external risers, sweeps, impacts and scratches from Backend/sfx.
+  * Matches loudness per track and applies a look-ahead limiter to the master.
 
 Examples
   python dj_audio.py analyze ./songs
@@ -46,6 +45,7 @@ import numpy as np
 
 from virtual_dj import Track, VirtualDJ, bpm_distance, load_library, print_set
 from transition_planner import choose_transition
+from effects_engine import scan_effects, choose_effect, overlay_effect
 
 warnings.filterwarnings("ignore")
 
@@ -829,7 +829,8 @@ def plain_transitions(entries, overlap_bars):
 
 
 def render_mix(entries, out_path: str, overlap_bars: int = 16, ramp_bars: int = 16, log=print,
-               refine: bool = True, fx: bool = True, target_db: float = TARGET_DB) -> dict:
+               refine: bool = True, fx: bool = True, target_db: float = TARGET_DB,
+               sfx_dir: str | None = None, sfx_chance: float = 0.35) -> dict:
     import soundfile as sf
     n = len(entries)
     if refine and n > 1:
@@ -839,6 +840,15 @@ def render_mix(entries, out_path: str, overlap_bars: int = 16, ramp_bars: int = 
     else:
         mix_out, ovs, styles = plain_transitions(entries, overlap_bars)
         entry_cues = [e.track.first_downbeat for e in entries]
+
+    if not 0.0 <= sfx_chance <= 1.0:
+        raise ValueError("sfx_chance must be between 0 and 1")
+    effects_dir = sfx_dir if sfx_dir is not None else Path(__file__).resolve().parent / "sfx"
+    sfx_bank = scan_effects(effects_dir)
+    sfx_cache = {}
+    effect_count = sum(len(paths) for paths in sfx_bank.values())
+    if effect_count:
+        log(f"Loaded {effect_count} external effect(s) from {effects_dir}")
 
     tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
     tmp.close()
@@ -939,6 +949,30 @@ def render_mix(entries, out_path: str, overlap_bars: int = 16, ramp_bars: int = 
                     else:
                         mixed = eq_blend(cur[:, q: q + ovl], "out", bar_s) + eq_blend(arr[:, :ovl], "in", bar_s)
                         arr[:, :ovl] = mixed
+
+                    # Optional external accent layer, placed relative to the selected handoff.
+                    if sfx_bank and sfx_chance > 0:
+                        pair_token = f"{entries[i - 1].track.title}|{t.title}|{i}"
+                        selected = choose_effect(
+                            sfx_bank, styles[i - 1], pair_token, chance=sfx_chance
+                        )
+                        if selected:
+                            category, effect_path = selected
+                            try:
+                                if effect_path not in sfx_cache:
+                                    sfx_audio = to_stereo(
+                                        load_audio(effect_path, SR, mono=False)
+                                    )
+                                    sfx_cache[effect_path] = sfx_audio
+                                applied = overlay_effect(
+                                    arr, sfx_cache[effect_path], ovl, category,
+                                    sample_rate=SR, gain=0.16,
+                                )
+                                if applied:
+                                    log(f"  FX: {category} ({Path(effect_path).name})")
+                            except Exception as exc:
+                                log(f"  (skipped FX {effect_path}: {exc})")
+
                     base += q
                     cur = arr
                     downbeat_at = 0
@@ -1046,8 +1080,11 @@ def cmd_mix(args):
         raise SystemExit("Audio files not found for: " + ", ".join(missing) +
                          "\n(The CSV needs a 'path' column pointing at each song.)")
     print("\nRendering...")
-    res = render_mix(entries, args.out, overlap_bars=args.overlap_bars, ramp_bars=args.ramp_bars,
-                     refine=not args.no_structure, fx=not args.no_fx, target_db=args.target_db)
+    res = render_mix(
+        entries, args.out, overlap_bars=args.overlap_bars, ramp_bars=args.ramp_bars,
+        refine=not args.no_structure, fx=not args.no_fx, target_db=args.target_db,
+        sfx_dir=args.sfx_dir, sfx_chance=args.sfx_chance,
+    )
     print(f"\n{'#':>2}  {'starts':>6}  {'key':>3}  {'native':>7}  {'enters at':>9}  {'transition':<14}  track")
     for r in res["timeline"]:
         m, s = divmod(int(r["start_s"]), 60)
@@ -1089,6 +1126,10 @@ def main():
     m.add_argument("--no-structure", action="store_true",
                    help="use the planner's mix points as they are (skip intro/outro detection)")
     m.add_argument("--no-fx", action="store_true", help="long EQ blends only (no echo-out transitions)")
+    m.add_argument("--sfx-dir", default=None,
+                   help="folder of external riser_/sweep_/impact_/scratch_ effects (default: Backend/sfx)")
+    m.add_argument("--sfx-chance", type=float, default=0.35,
+                   help="probability of adding one external effect per transition (0 to 1; default 0.35)")
     m.add_argument("--plan-only", action="store_true", help="print the set, don't render audio")
     m.add_argument("--quiet", action="store_true")
     m.set_defaults(fn=cmd_mix)
