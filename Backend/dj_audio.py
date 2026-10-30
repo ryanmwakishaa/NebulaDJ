@@ -601,12 +601,20 @@ def refine_transitions(entries, overlap_bars: int, fx: bool = True, log=print):
             why = f"full-track search score {choice.score:.3f}"
         else:
             # Graceful fallback for files whose structure analysis is unavailable.
-            # Still use a phrase boundary and keep the old first-downbeat entry.
-            k = max(4, int(math.ceil(k_plan / 4)) * 4)
+            # Never move the exit back before the incoming cue or its play window.
+            k = int(math.ceil(minimum_out_bar / 4)) * 4
             j = 0
             if st:
-                k = min(k, max(4, st["nb"] - ov))
-                k = (k // 4) * 4
+                max_out = ((st["nb"] - ov) // 4) * 4
+                if max_out < minimum_out_bar:
+                    ov = 4
+                    max_out = ((st["nb"] - ov) // 4) * 4
+                if max_out < minimum_out_bar:
+                    raise ValueError(
+                        f"Not enough usable audio left in '{t.title}' for a transition "
+                        f"after its selected entry cue."
+                    )
+                k = min(k, max_out)
             why = "fallback: insufficient structure data"
 
         out_time = t.first_downbeat + k * bar_out
