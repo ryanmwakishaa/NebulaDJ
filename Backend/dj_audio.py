@@ -45,6 +45,7 @@ from pathlib import Path
 import numpy as np
 
 from virtual_dj import Track, VirtualDJ, bpm_distance, load_library, print_set
+from transition_planner import choose_transition
 
 warnings.filterwarnings("ignore")
 
@@ -55,7 +56,7 @@ AUDIO_EXTS = {".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".aiff",
 CACHE_NAME = ".dj_cache.json"
 CACHE_VERSION = 3
 STRUCT_CACHE_NAME = ".dj_structure.json"
-STRUCT_VERSION = 1
+STRUCT_VERSION = 2
 XF_H = int(0.010 * SR)      # half-width of the splice crossfade between stretched chunks
 PAD = int(1.0 * SR)         # context fed to the phase vocoder around each chunk
 MIN_RATE, MAX_RATE = 0.85, 1.18
@@ -460,8 +461,12 @@ def structure_from_audio(y: np.ndarray, sr: int, bpm: float, first_downbeat: flo
     last = next((k for k in range(nb - 1, run - 2, -1) if active[k - run + 1:k + 1].all()), None)
     if intro is None or last is None or last < intro:
         return None
+    # Keep a normalized per-bar energy curve so transitions can be searched
+    # across the full usable track, not just at the outro.
+    profile = np.clip(e[:nb] / (body + 1e-9), 0.0, 2.5)
     return {"nb": nb, "intro_bars": int(intro), "outro_start": int(last) + 1,
-            "outro_bars": int(nb - last - 1), "body": round(body, 3)}
+            "outro_bars": int(nb - last - 1), "body": round(body, 3),
+            "bar_energy": np.round(profile, 3).tolist()}
 
 
 def _struct_key(track: Track) -> str:
@@ -513,79 +518,115 @@ def keys_compatible(a: str, b: str) -> bool:
     return False
 
 
+def _clock_label(seconds: float) -> str:
+    seconds = max(0, int(round(seconds)))
+    return f"{seconds // 60:02d}:{seconds % 60:02d}"
+
+
 def refine_transitions(entries, overlap_bars: int, fx: bool = True, log=print):
-    """Turn the planner's rough mix points into structure-aware ones.
+    """Choose phrase-aligned exit AND entry cues across each pair of full tracks.
 
-    For every transition i -> i+1 this decides
-      * where the outgoing track starts to mix out (a phrase boundary at its outro start),
-      * how many bars the blend lasts (never longer than the outgoing outro or the
-        incoming intro), and
-      * the style: 'blend' (long EQ blend) or 'echo' (short echo-out + drop-in) when the
-        tempo/key don't fit well enough for a long blend.
-
-    Returns (mix_out, overlaps, styles): mix_out[i] is a time in track i (None for the last
-    track); overlaps[i] and styles[i] describe the transition from track i to i+1.
+    The search is not restricted to the outgoing outro or incoming intro. It evaluates
+    matching per-bar energy windows across the usable audio in both tracks. Key and tempo
+    compatibility select a transition style and overlap length; transition_planner scores
+    candidate cue pairs. Returns (mix_out_times, overlaps, styles, entry_cue_times).
     """
     n = len(entries)
-    log("Analysing track structure (intro / outro)...")
+    log("Analysing full-track structure for transition candidates...")
     structs = [track_structure(e.track, log) for e in entries]
 
     mix_out: list = [None] * n
     overlaps = [overlap_bars] * max(0, n - 1)
     styles = ["blend"] * max(0, n - 1)
-    prev_nL = 0
+    entry_cues = [e.track.first_downbeat for e in entries]
+    entry_bars = [0] * n
+    previous_in_overlap = 0
+
     for i in range(n - 1):
         t, nx = entries[i].track, entries[i + 1].track
-        f, bar = t.first_downbeat, 240.0 / t.bpm
+        bar_out = 240.0 / t.bpm
+        bar_in = 240.0 / nx.bpm
         st, sn = structs[i], structs[i + 1]
-        k_plan = max(1, int(round((entries[i].mix_out_in_track - f) / bar)))
-        ratio = bpm_distance(t.bpm, nx.bpm)[1] or 1.0
-        nb = st["nb"] if st else None
+        current_entry_bar = entry_bars[i]
 
-        # 1. Where to start mixing out: at a phrase (8-bar) boundary at the start of the outro.
-        if st and st["outro_bars"] >= 8:
-            o = st["outro_start"]
-            lo8 = (o // 8) * 8
-            k = lo8 if o - lo8 <= 2 else lo8 + 8
-            why = f"outro from bar {o}"
-        else:
-            k = int(round(k_plan / 8)) * 8
-            why = "no clear outro, snapped to a phrase"
-        k = max(8, k)
-        # The track must already have finished its own incoming overlap (+ a little groove).
-        while k < prev_nL + 4:
-            k += 8
-        if nb:
-            while k > nb - 4 and k > 8:
-                k -= 8
+        k_plan = max(
+            current_entry_bar + previous_in_overlap + 4,
+            int(round((entries[i].mix_out_in_track - t.first_downbeat) / bar_out)),
+        )
 
-        # 2. How long to blend: not past the outgoing outro, not into the incoming body.
-        cap_out = max(4, ((nb - k) // 4) * 4) if nb else overlap_bars
-        cap_in = max(4, int(sn["intro_bars"] * ratio) // 4 * 4) if sn else overlap_bars
-        ov = max(4, min(overlap_bars, cap_out, cap_in))
-
-        # 3. Style.
+        _, ratio = bpm_distance(t.bpm, nx.bpm)
+        ratio = ratio or 1.0
         keys_ok = keys_compatible(t.key, nx.key)
-        r_need = t.bpm / (nx.bpm * ratio)
-        tempo_ok = MIN_RATE <= r_need <= MAX_RATE
-        style = "blend"
+        required_rate = t.bpm / (nx.bpm * ratio)
+        tempo_ok = MIN_RATE <= required_rate <= MAX_RATE
+        energy_gap = nx.energy - t.energy
+
+        # Choose the transition treatment before searching, so both cues have
+        # enough source audio for the selected overlap.
         reasons = []
-        if fx and (ov < 8 or not keys_ok or not tempo_ok):
+        if not fx:
+            style = "blend"
+            ov = min(max(4, overlap_bars), 16)
+        elif not keys_ok or not tempo_ok:
             style = "echo"
             ov = 4
             if not keys_ok:
-                reasons.append("keys clash")
+                reasons.append("key mismatch")
             if not tempo_ok:
-                reasons.append("tempo gap")
-            if cap_out < 8 or cap_in < 8:
-                reasons.append("short intro/outro")
-        mix_out[i] = f + k * bar
-        overlaps[i], styles[i] = ov, style
-        prev_nL = max(1, int(round(ov / ratio)))
-        log(f"  {i + 1}->{i + 2}: mix out at bar {k} ({why}), {style} over {ov} bars"
-            + (f" [{', '.join(reasons)}]" if reasons else ""))
-    return mix_out, overlaps, styles
+                reasons.append("tempo mismatch")
+        elif energy_gap >= 2:
+            style = "filter"
+            ov = min(max(4, overlap_bars), 8)
+            reasons.append(f"energy lift +{energy_gap}")
+        else:
+            style = "blend"
+            ov = min(max(4, overlap_bars), 16)
 
+        choice = None
+        if (st and sn and st.get("bar_energy") and sn.get("bar_energy")):
+            choice = choose_transition(
+                st["bar_energy"],
+                sn["bar_energy"],
+                minimum_out_bar=k_plan,
+                minimum_in_bar=0,
+                overlap_bars=ov,
+                preferred_out_bar=k_plan,
+                stride_bars=4,
+            )
+
+        if choice is not None:
+            k, j = choice.out_bar, choice.in_bar
+            ov = choice.overlap_bars
+            why = f"full-track search score {choice.score:.3f}"
+        else:
+            # Graceful fallback for files whose structure analysis is unavailable.
+            # Still use a phrase boundary and keep the old first-downbeat entry.
+            k = max(4, int(math.ceil(k_plan / 4)) * 4)
+            j = 0
+            if st:
+                k = min(k, max(4, st["nb"] - ov))
+                k = (k // 4) * 4
+            why = "fallback: insufficient structure data"
+
+        out_time = t.first_downbeat + k * bar_out
+        in_time = nx.first_downbeat + j * bar_in
+        mix_out[i] = out_time
+        entry_cues[i + 1] = in_time
+        entry_bars[i + 1] = j
+        overlaps[i], styles[i] = ov, style
+        previous_in_overlap = max(1, int(round(ov / ratio)))
+
+        confidence = "high" if choice is not None and keys_ok and tempo_ok else (
+            "medium" if choice is not None else "fallback"
+        )
+        suffix = f" [{', '.join(reasons)}]" if reasons else ""
+        log(
+            f"  {i + 1}->{i + 2}: OUT {_clock_label(out_time)} (bar {k}) "
+            f"-> IN {_clock_label(in_time)} (bar {j}); "
+            f"{style} over {ov} bars; {why}; {confidence}{suffix}"
+        )
+
+    return mix_out, overlaps, styles, entry_cues
 
 # ==========================================================================
 # Rendering
@@ -794,9 +835,12 @@ def render_mix(entries, out_path: str, overlap_bars: int = 16, ramp_bars: int = 
     import soundfile as sf
     n = len(entries)
     if refine and n > 1:
-        mix_out, ovs, styles = refine_transitions(entries, overlap_bars, fx=fx, log=log)
+        mix_out, ovs, styles, entry_cues = refine_transitions(
+            entries, overlap_bars, fx=fx, log=log
+        )
     else:
         mix_out, ovs, styles = plain_transitions(entries, overlap_bars)
+        entry_cues = [e.track.first_downbeat for e in entries]
 
     tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
     tmp.close()
@@ -817,7 +861,9 @@ def render_mix(entries, out_path: str, overlap_bars: int = 16, ramp_bars: int = 
                     raise FileNotFoundError(f"audio file missing for '{t.title}': {t.path!r}")
                 y = to_stereo(load_audio(t.path, SR, mono=False))
                 y *= loudness_gain(y, target_db)
-                f, bar = t.first_downbeat, 240.0 / t.bpm
+                # Later tracks may enter at a cue point selected from anywhere in the source.
+                f = t.first_downbeat if is_first else entry_cues[i]
+                bar = 240.0 / t.bpm
                 is_first, is_last = i == 0, i == n - 1
                 kM = None if is_last else max(1, int(round((mix_out[i] - f) / bar)))
                 ov_out = None if is_last else ovs[i]          # blend length leaving this track
@@ -904,6 +950,8 @@ def render_mix(entries, out_path: str, overlap_bars: int = 16, ramp_bars: int = 
                     "native_bpm": t.bpm,
                     "enter_bpm": None if is_first else round(t.bpm * ratio * r0, 2),
                     "start_s": (base + downbeat_at) / SR,
+                    "source_cue_s": round(f, 3),
+                    "mix_out_source_s": None if is_last else round(mix_out[i], 3),
                     "via": None if is_first else f"{styles[i - 1]} {ovs[i - 1]} bars",
                 })
                 prev = {"bar_off": bar_off, "kM": kM, "ov": ov_out}
