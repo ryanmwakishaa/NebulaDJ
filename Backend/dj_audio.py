@@ -549,8 +549,9 @@ def refine_transitions(entries, overlap_bars: int, fx: bool = True, log=print):
         st, sn = structs[i], structs[i + 1]
         current_entry_bar = entry_bars[i]
 
+        minimum_out_bar = current_entry_bar + previous_in_overlap + 8
         k_plan = max(
-            current_entry_bar + previous_in_overlap + 4,
+            minimum_out_bar,
             int(round((entries[i].mix_out_in_track - t.first_downbeat) / bar_out)),
         )
 
@@ -587,7 +588,7 @@ def refine_transitions(entries, overlap_bars: int, fx: bool = True, log=print):
             choice = choose_transition(
                 st["bar_energy"],
                 sn["bar_energy"],
-                minimum_out_bar=k_plan,
+                minimum_out_bar=minimum_out_bar,
                 minimum_in_bar=0,
                 overlap_bars=ov,
                 preferred_out_bar=k_plan,
@@ -616,14 +617,11 @@ def refine_transitions(entries, overlap_bars: int, fx: bool = True, log=print):
         overlaps[i], styles[i] = ov, style
         previous_in_overlap = max(1, int(round(ov / ratio)))
 
-        confidence = "high" if choice is not None and keys_ok and tempo_ok else (
-            "medium" if choice is not None else "fallback"
-        )
         suffix = f" [{', '.join(reasons)}]" if reasons else ""
         log(
             f"  {i + 1}->{i + 2}: OUT {_clock_label(out_time)} (bar {k}) "
             f"-> IN {_clock_label(in_time)} (bar {j}); "
-            f"{style} over {ov} bars; {why}; {confidence}{suffix}"
+            f"{style} over {ov} bars; {why}{suffix}"
         )
 
     return mix_out, overlaps, styles, entry_cues
