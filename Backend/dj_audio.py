@@ -1111,6 +1111,11 @@ def cmd_mix(args):
     entries = dj.build_set(args.tracks, start=start)
     print_set(entries, verbose=not args.quiet)
     if args.plan_only:
+        if len(entries) > 1 and not args.no_structure:
+            print("\\nSearching full-track transition cues...")
+            refine_transitions(
+                entries, args.overlap_bars, fx=not args.no_fx, log=print
+            )
         return
     missing = [e.track.title for e in entries if not e.track.path or not os.path.exists(e.track.path)]
     if missing:
