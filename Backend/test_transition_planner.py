@@ -35,6 +35,26 @@ class TransitionPlannerTests(unittest.TestCase):
         self.assertEqual(choice.out_bar, 20)
         self.assertEqual(choice.in_bar, 44)
 
+    def test_old_planned_mix_point_is_not_a_hard_lower_bound(self):
+        outgoing = np.full(72, 1.0, dtype=np.float32)
+        incoming = np.full(72, 0.15, dtype=np.float32)
+        pattern = np.array([0.30, 0.40, 0.55, 0.70, 0.68, 0.55, 0.42, 0.32],
+                           dtype=np.float32)
+        outgoing[12:20] = pattern
+        incoming[36:44] = pattern
+
+        choice = choose_transition(
+            outgoing,
+            incoming,
+            minimum_out_bar=8,
+            overlap_bars=8,
+            preferred_out_bar=48,
+        )
+
+        self.assertIsNotNone(choice)
+        self.assertEqual(choice.out_bar, 12)
+        self.assertEqual(choice.in_bar, 36)
+
     def test_returns_none_when_there_is_not_enough_active_audio(self):
         silent = np.zeros(24, dtype=np.float32)
         self.assertIsNone(
